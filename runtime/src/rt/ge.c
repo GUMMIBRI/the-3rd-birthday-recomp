@@ -820,6 +820,7 @@ static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt
          * full-screen effects; squeezing leaves the window's sides uncovered, and an effect's
          * pieces must all be treated alike or they no longer line up. */
         if (s_draw_ws < 0.999f && count <= 16) s_draw_ws = 1.0f;
+        if (g_drawlog_on == 1) fprintf(stderr, "WS persp n=%d -> x scale %.4f\n", count, s_draw_ws);
         return;
     }
     /* a texture inside the display buffers is a screen copy: its UVs must keep lining up */
