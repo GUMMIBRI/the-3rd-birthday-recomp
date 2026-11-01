@@ -3,6 +3,12 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- widescreen: characters don't tear apart anymore when you maximize the window or go fullscreen
+  after the game started. small pieces like hair and straps were getting stretched separately
+  from the rest of the model
+
 ## 0.9.3 - 2026-10-25
 
 small one:

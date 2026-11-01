@@ -803,6 +803,7 @@ typedef struct CVtx CVtx;
 static void ws_clip_x(uint32_t addr, const VFmt *vf, float *x, float *y);
 static float s_draw_ws = 1.0f;   /* x scale for the current draw (1 = untouched) */
 static int   s_draw_ws_skip = 0; /* flat draw entirely off the PSP screen: squeezing would show it */
+static int ws_big_on_screen(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt, int count);
 static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt, int count) {
     s_draw_ws = 1.0f; s_draw_ws_skip = 0; ge.ws_clip = 0;
     if (g_ge_ws <= 1.001f || ge.fbw != 512 || (ge.fbp & 0xFFFFFF) >= 0x110000) return;
@@ -818,8 +819,13 @@ static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt
          * 3D, sized to the PSP's view: the Overdive colour tint, the finale's black backdrop
          * (four quarter-screen quads), the Game Over smoke and blood. Stretch them like 2D
          * full-screen effects; squeezing leaves the window's sides uncovered, and an effect's
-         * pieces must all be treated alike or they no longer line up. */
-        if (s_draw_ws < 0.999f && count <= 16) s_draw_ws = 1.0f;
+         * pieces must all be treated alike or they no longer line up.
+         * Only when the draw really covers a big part of the screen (the effects above are full,
+         * half or quarter-screen quads): the scene's own cameras stay at 480:272 too when the
+         * window is maximized or made fullscreen after the game set them up, and then small
+         * pieces of a model (hair, straps, gloves) must be squeezed like the rest of it or they
+         * tear off it (issue #7). */
+        if (s_draw_ws < 0.999f && count <= 16 && ws_big_on_screen(vf, vbase, ibase, idxfmt, count)) s_draw_ws = 1.0f;
         if (g_drawlog_on == 1) fprintf(stderr, "WS persp n=%d -> x scale %.4f\n", count, s_draw_ws);
         return;
     }
@@ -1410,6 +1416,24 @@ void ge_interp_frame(void) {
 }
 
 static void transform_vtx_clip(uint32_t addr, const VFmt *vf, CVtx *o);
+/* Widescreen (ws_decide): does this perspective draw cover at least 45% of the screen's width or
+ * height (a screen effect quad), unsqueezed and with every vertex in front of the camera? */
+static int ws_big_on_screen(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt, int count) {
+    float lx = 1e9f, hx = -1e9f, ly = 1e9f, hy = -1e9f;
+    const float keep = s_draw_ws; s_draw_ws = 1.0f;
+    int ok = 1;
+    for (int i = 0; i < count; i++) {
+        CVtx c; transform_vtx_clip(prim_vtx_addr(vbase, ibase, idxfmt, i, vf->stride), vf, &c);
+        if (c.cw <= 1e-6f) { ok = 0; break; }
+        const float x = c.cx / c.cw, y = c.cy / c.cw;
+        if (x < lx) lx = x;
+        if (x > hx) hx = x;
+        if (y < ly) ly = y;
+        if (y > hy) hy = y;
+    }
+    s_draw_ws = keep;
+    return ok && (hx - lx >= 0.9f || hy - ly >= 0.9f);   /* NDC spans 2: 0.9 = 45% */
+}
 static void ws_clip_x(uint32_t addr, const VFmt *vf, float *x, float *y) {   /* ortho: cw = 1 */
     CVtx c; const float keep = s_draw_ws; s_draw_ws = 1.0f;
     transform_vtx_clip(addr, vf, &c);
