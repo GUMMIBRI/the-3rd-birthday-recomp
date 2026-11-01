@@ -12,6 +12,11 @@ with a Vulkan renderer. It is not an emulator: the game logic runs as compiled P
 voice, music and saving, but few people have played it through yet. Expect bugs, and please
 report them.
 
+On top of the original it adds things the PSP version never had, like **free aim** (aim with
+the mouse or the right stick, up and down too, with the crosshair in the middle of the screen),
+a modern over-the-shoulder camera, 60 fps, widescreen, higher resolution, remappable controls
+and a cheats menu. See [What works](#what-works).
+
 You need your own copy of the game (a PSP disc image you dumped yourself). No game data
 is included in this repository or in the releases.
 
