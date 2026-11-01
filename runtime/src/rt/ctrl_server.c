@@ -6,6 +6,7 @@
  *   stick <x> <y> <frames>     hold the left stick (0..255, 128 = centre)
  *   shot <path>                save the next presented frame as PNG at <path>
  *   read <hexaddr> <len>       guest memory as hex
+ *   dump <hexaddr> <hexlen> <path>  guest memory as a raw file
  *   vcount                     vblanks so far
  * Each command gets one reply line ("ok ..." / "err ..."). */
 #define WIN32_LEAN_AND_MEAN
@@ -60,6 +61,10 @@ static void handle(SOCKET c, char *line) {
         for (unsigned long i = 0; i < b; i++) n += snprintf(out + n, sizeof out - n, "%02x", MEM_R8((uint32_t)a + (uint32_t)i));
         snprintf(out + n, sizeof out - n, "\n");
         reply(c, out);
+    } else if (!strcmp(cmd, "dump") && sscanf(line, "%*s %lx %lx %299[^\r\n]", &a, &b, arg) == 3) {   /* test: raw guest memory to a file */
+        FILE *fo = fopen(arg, "wb");
+        if (fo) { for (unsigned long i = 0; i < b; i += 4) { uint32_t w = MEM_R32((uint32_t)(a + i)); fwrite(&w, 4, 1, fo); } fclose(fo); }
+        reply(c, fo ? "ok\n" : "err open\n");
     } else if (!strcmp(cmd, "mouse")) {   /* test: mouse camera motion "mouse <dx> <dy>" (pixels) */
         float dx = 0, dy = 0; sscanf(line, "%*s %f %f", &dx, &dy);
         extern void sdl3vk_mouse_test(float dx, float dy); sdl3vk_mouse_test(dx, dy); reply(c, "ok\n");

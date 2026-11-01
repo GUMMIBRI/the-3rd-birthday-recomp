@@ -104,7 +104,12 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
   4 and 5), and a controller button. Only the two sticks are fixed (left = move, right = camera).
 - **Two camera styles** (Esc menu > Camera style, or the launcher): *Classic* orbits around Aya
   and returns behind her like the original; *Modern* is an over-the-shoulder camera that stays
-  where you point it, Aya walks where you look, and while aiming the mouse moves the aim
+  where you point it, and Aya walks where you look
+- **Free aim** (Esc menu > Free aim, on by default): hold L / right mouse and the aim starts
+  where the camera looks; the mouse or the right stick then moves it left, right, up and down,
+  with the crosshair staying in the middle and the shots going where it points. If the game
+  locked onto an enemy, the lock stays until you move the aim. The sniper scope and the
+  launchers keep the game's own stick aiming (the mouse moves it)
 - **Mouse camera**: click the game window and the mouse turns the camera (left button fires, right
   aims; Esc releases the mouse); smooth WASD turning
 - **Launcher** (`The 3rd Birthday.exe`): disc image, settings, save list with backup / restore,
@@ -119,8 +124,8 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
 - Data Install (Extra menu) works, and **Use Install Data** reads from it like on a PSP
 - Saves from a real PSP or PPSSPP can be imported (`tools/save_import.py`); the port's saves load in PPSSPP
 - Xbox, PlayStation and other controllers through SDL3, plus keyboard
-- **Twin-stick camera**: the right stick orbits the camera around Aya. Aiming follows
-  the camera, and the game's own cameras take over for aiming, Overdive and Liberation.
+- **Twin-stick camera**: the right stick orbits the camera around Aya. Aiming starts where
+  the camera looks, and the game's own cameras take over for aiming, Overdive and Liberation.
 
 ## Controls
 
@@ -128,7 +133,8 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
 | --- | --- | --- |
 | Move | Left stick | W A S D |
 | Camera (twin-stick orbit) | Right stick | I / J / K / L |
-| Aim while holding L | Right stick (or left stick) | I / J / K / L |
+| Aim while holding L (free aim) | Right stick | I / J / K / L, or the mouse |
+| Strafe while holding L | Left stick | W A S D |
 | Reset camera behind Aya | Right stick click (R3) | O |
 | Camera / fire / aim with the mouse | — | click the window, then mouse / left button / right button |
 | Cross / Circle / Square / Triangle | A / B / X / Y | X or Space / Z / C / V |

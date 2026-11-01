@@ -3,6 +3,19 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- free aim! hold L (right mouse) and you aim where the camera is looking, then the mouse or the
+  right stick moves the aim around, left/right and up/down, and the shots go where the crosshair
+  is. the original game can't do this at all, you could only aim the way Aya was facing.
+  if the game locks onto an enemy when you start aiming it keeps the lock until you move the
+  mouse. on by default, turn it off in Esc > Free aim if you want the old aiming back
+- the sniper scope and the launchers still aim like before (mouse moves them)
+- fixed: in 0.9.1-0.9.4 moving the mouse while aiming made Aya walk sideways instead of aiming,
+  sorry about that
+
+you'll need to press "Prepare game" once more after updating
+
 ## 0.9.4 - 2026-11-01
 
 - widescreen: characters don't tear apart anymore when you maximize the window or go fullscreen

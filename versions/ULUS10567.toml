@@ -72,6 +72,14 @@ camera_copy   = 0x08B20774
 cam_projection = 0x08BBB194
 # Widescreen: another camera setup, aspect ratio passed in $f13 (fov $f12, near $f14, far $f15).
 cam_setup      = 0x08B435B8
+# Free aim. The game latches the aim direction when L is pressed (a unit vector at Aya + 0x13a0,
+# copy at +0x13b0; the stick then strafes); her aim point, the aim camera and the crosshair follow
+# it. Aya's facing (yaw, radians, same convention as the camera's look direction) is turned into
+# her root matrix every frame by mat_from_yaw(a0 = object, $f13 = yaw); while aiming the runtime
+# sets $f13 and the latched vector to the free-aim direction. player_pose(a0 = Aya's object)
+# reads that matrix back each frame: it tells which object is Aya.
+mat_from_yaw   = 0x088338F8
+player_pose    = 0x08975CC8
 
 [patches]
 # Instruction patches the Esc menu's Cheats page switches on and off (codegen emits both the

@@ -22,9 +22,17 @@
  * by the mouse / right stick instead of an offset from the game's follow camera, so it doesn't
  * swing behind Aya when she runs; both cameras get that direction (W walks where you look). The
  * rendered view is also moved over Aya's shoulder: closer, eye and target shifted to the side
- * (only the view camera's source, so the game's logic camera keeps its own distance). While
- * aiming, mouse motion moves the aim like the stick does. A camera cut or a special camera
- * (aim, Overdive) takes the direction from the game's camera again.
+ * (only the view camera's source, so the game's logic camera keeps its own distance). A camera
+ * cut or a special camera (aim, Overdive) takes the direction from the game's camera again.
+ *
+ * Free aim (free_aim=1, Esc menu "Free aim"; both styles). The game itself has none: pressing L
+ * latches the aim direction (a unit vector in Aya's object) to her facing, the stick then
+ * strafes, and her aim point, the aim camera and the crosshair all follow that latched vector.
+ * While L is held the runtime writes its own direction there and sets her facing to match where
+ * the game turns it into her root matrix (hook mat_from_yaw, versions/<game>.toml), so she, the
+ * camera, the crosshair and the shots turn together. It starts where the camera looked when L
+ * was pressed (no wait for Aya to turn first); the mouse / right stick move it left/right and
+ * up/down while aiming. When L is released the game keeps her facing from the matrix.
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -72,6 +80,11 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
 #define MODERN_DOLLY  0.70f   /* eye this much of the game's distance from the target */
 #define MODERN_SIDE   0.22f   /* eye and target moved this much of the distance to the side */
 #define MODERN_RAISE  0.06f   /* target raised a little: Aya's shoulder, not her waist */
+/* The game's aim camera looks this much to the left of Aya's facing (radians, measured: the
+ * same at every facing), so a turn that puts the crosshair on a direction sets her facing a
+ * little to the right of it, as the game itself does. */
+#define AIM_CAM_OFF   0.0594f
+#define AIM_PITCH_MAX 0.9f      /* free aim up / down limit (radians) */
 #define MODERN_AIM_GAIN 9.0f  /* mouse radians per pad sample -> aim stick deflection (x4 when steady) */
 
 static int s_on = -1;
@@ -90,6 +103,18 @@ static int s_suspended = 0;                          /* a special camera is live
 static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick orbit */
 static float s_yaw_vel = 0.0f, s_pitch_vel = 0.0f;   /* smoothed turn speed (rad/s) */
 static unsigned s_ticks = 0, s_hook_tick = 0;        /* pad reads, and the last one with a camera hook */
+static int s_free_aim = 1;                           /* free aim on */
+static int s_aiming = 0;                             /* L reaches the game (last pad sample) */
+static int s_aim_pending = 0;                        /* L just pressed: the turn is set on the next pose */
+static float s_aim_look = 0.0f;                      /* where the view looked when L was pressed */
+static int s_aim_active = 0;                         /* free aim sets Aya's facing */
+static int s_aim_moved = 0;                          /* the mouse / right stick moved the aim (this L press) */
+static int s_aim_stick = 0;                          /* this aim ignores free aim: feed the stick instead */
+static float s_aim_yaw = 0.0f;                       /* the facing it sets (radians, look convention) */
+static float s_aim_pitch = 0.0f;                     /* and the aim's elevation (radians, up > 0) */
+static float s_view_look = 0.0f;                     /* the view camera's look direction (yaw) */
+static int s_view_look_ok = 0;
+static uint32_t s_aya = 0;                           /* Aya's object (hook player_pose) */
 
 /* The eye we last wrote into each camera object, so a second pass in the same frame (the
  * game calls these routines more than once) doesn't rotate it again. */
@@ -99,8 +124,8 @@ static struct { uint32_t base; float eye[3]; } s_last[MAX_CAMS];
 static void cfg_save(void) {
     FILE *f = fopen(CFG_FILE, "w");
     if (!f) return;
-    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\nrecenter_delay_still=%.2f\nstyle=%d\n",
-            s_speed, s_inv_x, s_inv_y, s_recenter, s_recenter_delay, s_recenter_delay_still, s_style);
+    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\nrecenter_delay_still=%.2f\nstyle=%d\nfree_aim=%d\n",
+            s_speed, s_inv_x, s_inv_y, s_recenter, s_recenter_delay, s_recenter_delay_still, s_style, s_free_aim);
     fclose(f);
 }
 
@@ -120,6 +145,7 @@ static void init_once(void) {
             else if (sscanf(line, "recenter_delay=%f", &v) == 1) s_recenter_delay = v;
             else if (sscanf(line, "recenter=%f", &v) == 1) s_recenter = v != 0.0f;
             else if (sscanf(line, "style=%f", &v) == 1) s_style = v != 0.0f;
+            else if (sscanf(line, "free_aim=%f", &v) == 1) s_free_aim = v != 0.0f;
         }
         fclose(f);
         cfg_save();                                  /* add keys missing from older files */
@@ -127,6 +153,7 @@ static void init_once(void) {
         cfg_save();                                  /* write the defaults so they can be edited */
     }
     { const char *st = getenv("SR_CAMSTYLE"); if (st) s_style = atoi(st) != 0; }   /* tests */
+    { const char *fa = getenv("SR_FREEAIM"); if (fa) s_free_aim = atoi(fa) != 0; }
     const char *sp = getenv("SR_TWINSTICK_SPEED");
     if (sp) s_speed = (float)atof(sp);
     if (!(s_speed >= SENS_MIN)) s_speed = SENS_MIN;
@@ -144,6 +171,7 @@ float sr_twinstick_setting(int id) {
     case SR_TS_TURNING:     return (s_yaw_vel != 0.0f || s_pitch_vel != 0.0f) ? 1.0f : 0.0f;
     case SR_TS_MOVING:      return (float)s_moving;
     case SR_TS_STYLE:       return (float)s_style;
+    case SR_TS_FREE_AIM:    return (float)s_free_aim;
     default:                return 0.0f;
     }
 }
@@ -155,6 +183,7 @@ void sr_twinstick_set(int id, float v) {
     case SR_TS_INVERT_Y:    s_inv_y = v != 0.0f; break;
     case SR_TS_RECENTER:    s_recenter = v != 0.0f; break;
     case SR_TS_STYLE:       s_style = v != 0.0f; s_abs_valid = 0; s_yaw_off = s_pitch_off = 0.0f; break;
+    case SR_TS_FREE_AIM:    s_free_aim = v != 0.0f; break;
     default: return;
     }
     cfg_save();
@@ -188,7 +217,29 @@ void sr_twinstick_tick(void) {
     /* Only while the gameplay camera is live (its hooks ran within the last few frames):
      * a stick push during a movie or menu must not bank an offset for later. */
     if (++s_ticks - s_hook_tick > 4) { s_yaw_vel = s_pitch_vel = 0.0f; return; }
-    if (s_suspended) { s_yaw_vel = s_pitch_vel = 0.0f; s_idle_s = 0.0f; return; }   /* special camera */
+    if (s_suspended) {                               /* special camera */
+        s_yaw_vel = s_pitch_vel = 0.0f; s_idle_s = 0.0f;
+        if (s_free_aim && s_aiming && !s_aim_stick && gui_on()) {   /* free aim: mouse and right stick turn the aim */
+            extern void gui_mouse_look(float *yaw, float *pitch);
+            float myaw = 0.0f, mpitch = 0.0f, rx = 0.0f, ry = 0.0f;
+            gui_mouse_look(&myaw, &mpitch);
+            gui_rstick(&rx, &ry);
+            if (g_script_rx != 0.0f) rx = g_script_rx;
+            if (s_inv_x) { myaw = -myaw; rx = -rx; }
+            rx *= fabsf(rx);                         /* squared response, like the camera */
+            if (s_inv_y) { mpitch = -mpitch; ry = -ry; }
+            ry *= fabsf(ry);
+            if (myaw != 0.0f || mpitch != 0.0f || rx * rx + ry * ry > 0.0004f) s_aim_moved = 1;
+            s_aim_yaw += -myaw - rx * YAW_RATE * s_speed * dt;
+            s_aim_pitch += -mpitch - ry * PITCH_RATE * s_speed * dt;
+            if (s_aim_pitch > AIM_PITCH_MAX) s_aim_pitch = AIM_PITCH_MAX;
+            if (s_aim_pitch < -AIM_PITCH_MAX) s_aim_pitch = -AIM_PITCH_MAX;
+            const float pi = 3.14159265f;
+            while (s_aim_yaw > pi) s_aim_yaw -= 2.0f * pi;
+            while (s_aim_yaw < -pi) s_aim_yaw += 2.0f * pi;
+        }
+        return;
+    }
     float rx = 0.0f, ry = 0.0f;
     int m_mouse = 0;                       /* the mouse moved the camera this tick */
     if (gui_on()) gui_rstick(&rx, &ry);
@@ -283,6 +334,17 @@ void sr_twinstick_tick(void) {
     if (m > 0.0f) s_snap = 0;                        /* the stick takes over again */
 }
 
+/* End of a free aim (L released, or this aim went back to the stick). The game builds Aya's
+ * matrix from her facing only while aiming, so this also runs from the pad filter. The latched
+ * direction is levelled again: the follow camera tilts with it. */
+static void aim_release(void) {
+    if (!s_aim_active) return;
+    s_aim_active = 0;
+    fprintf(stderr, "twinstick: free aim released (Aya faces %.2f)\n", s_aim_yaw);
+    if (!s_aya) return;
+    for (uint32_t o = 0x13a0; o <= 0x13b0; o += 0x10) { wrf(s_aya + o, sinf(s_aim_yaw)); wrf(s_aya + o + 4, 0.0f); wrf(s_aya + o + 8, cosf(s_aim_yaw)); }
+}
+
 /* Aim along the camera: L aims wherever Aya faces, and turning the camera doesn't turn her.
  * When L is pressed with the camera turned (and the left stick idle), hold L back for a few
  * samples and feed "left stick forward" instead: the game's own camera-relative movement turns
@@ -297,7 +359,10 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     if (!on) return;
     const int l = (*btn & 0x0100u) != 0;
     const int stick_idle = abs((int)*lx - 128) < 40 && abs((int)*ly - 128) < 40;
-    if (l && !prev_l && stick_idle && fabsf(s_yaw_off) > 0.2f && s_ticks - s_hook_tick <= 4) {
+    if (s_free_aim) {                  /* free aim turns Aya itself, from the first frame of aiming */
+        if (l && !prev_l && s_view_look_ok && s_ticks - s_hook_tick <= 4) { s_aim_look = s_view_look; s_aim_pending = 1; }
+        if (!l) { aim_release(); s_aim_pending = s_aim_moved = s_aim_stick = 0; }
+    } else if (l && !prev_l && stick_idle && fabsf(s_yaw_off) > 0.2f && s_ticks - s_hook_tick <= 4) {
         phase = AIM_TURN_SAMPLES;
         fprintf(stderr, "twinstick: aim along the camera (turning Aya %.2f rad first)\n", s_yaw_off);
     }
@@ -308,15 +373,16 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
         *btn &= ~0x0100u;          /* L waits */
         *lx = 128; *ly = 0;        /* stick forward: face the camera's direction */
     }
-    /* Aim with the right stick: while L reaches the game (aiming, including the egg launcher),
-     * the PSP's single analog stick moves the aim. Feed it the right stick when that is pushed,
-     * so aiming works like a modern twin-stick shooter; the left stick still works otherwise. */
-    if ((*btn & 0x0100u) && gui_on()) {
+    /* Aim with the right stick: while L reaches the game, the PSP's single analog stick moves
+     * the aim with the weapons whose aim the game moves itself (sniper scope, grenade / egg
+     * launcher; with the others it strafes). Without free aim, or when free aim found that the
+     * game doesn't follow it (aim_stick), the right stick and the mouse are fed to it. */
+    if ((*btn & 0x0100u) && gui_on() && (!s_free_aim || s_aim_stick)) {
         float rx = 0.0f, ry = 0.0f;
         gui_rstick(&rx, &ry);
         if (s_inv_x) rx = -rx;
         if (s_inv_y) ry = -ry;
-        if (s_style && rx * rx + ry * ry <= 0.0004f) {   /* modern: the mouse moves the aim */
+        if ((s_style || s_aim_stick) && rx * rx + ry * ry <= 0.0004f) {   /* the mouse moves the aim */
             /* Mouse motion becomes stick deflection that fades over ~0.1 s: the game reads the
              * pad once per frame (30 Hz) and keeps the latest sample, so a one-sample spike
              * could be missed; steady motion settles at 4x the per-sample amount. */
@@ -344,6 +410,7 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     /* What the game sees: L (aim, including the egg launcher) or Triangle (Overdive view)
      * switch to the game's own special cameras, which the orbit must leave alone. */
     s_btn_special = (*btn & (0x0100u | 0x1000u)) != 0;
+    s_aiming = (*btn & 0x0100u) != 0;
 }
 
 /* Rotate the eye of the camera object at base (eye +0x10, target +0x20) around its target by
@@ -512,6 +579,27 @@ static void update_special(uint32_t src) {
     }
 }
 
+/* Free aim works where the game's aim camera follows the latched direction (rifles, handguns,
+ * shotguns). The sniper scope and the launchers move their aim with the stick instead and ignore
+ * it: when the view keeps looking elsewhere for half a second after the aim was moved, this aim
+ * goes back to the stick (aim_stick; the mouse / right stick then drive the PSP stick). */
+static void aim_check(uint32_t src) {
+    static int miss = 0;
+    if (!(s_free_aim && s_aiming && s_aim_active && s_aim_moved)) { miss = 0; return; }
+    const float dx = rdf(src + 0x20) - rdf(src + 0x10), dy = rdf(src + 0x24) - rdf(src + 0x14), dz = rdf(src + 0x28) - rdf(src + 0x18);
+    const float h = sqrtf(dx * dx + dz * dz);
+    if (h < 1.0f) return;
+    float d = atan2f(dx, dz) - (s_aim_yaw + AIM_CAM_OFF);
+    while (d > 3.14159265f) d -= 6.2831853f;
+    while (d < -3.14159265f) d += 6.2831853f;
+    const int off = fabsf(d) > 0.2f || (fabsf(s_aim_pitch) < 0.3f && fabsf(atan2f(dy, h) - s_aim_pitch) > 0.25f);
+    miss = off ? miss + 1 : 0;
+    if (miss > 15) {
+        miss = 0; aim_release(); s_aim_stick = 1;
+        fprintf(stderr, "twinstick: this aim doesn't follow free aim (scope / launcher): the stick moves it\n");
+    }
+}
+
 int sr_func_hook(CpuState *s, uint32_t addr) {
     /* code mods (mods/<name>/, compiled in by scripts/build.sh) come first and may replace */
     { extern int sr_mods_hook(CpuState *s, uint32_t addr); if (sr_mods_hook(s, addr)) return 1; }
@@ -532,17 +620,59 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
     }
     init_once();
     if (!s_on) return 0;
-    s_hook_tick = s_ticks;
     switch (addr) {
     case HOOK_CAMERA_DERIVE:   /* a0 = camera object base (logic camera) */
+        s_hook_tick = s_ticks;
         if (!s_suspended && s->r[4] == MEM_R32(ADDR_CAMERA_PTR) + ADDR_CAMERA_EYE_OFF - 0x10u)
             rotate_camera(s->r[4], "logic camera");
         break;
     case HOOK_CAMERA_COPY:     /* copy(dst = a0, src = a1): the view camera's source */
+        s_hook_tick = s_ticks;
         if (s->r[4] == MEM_R32(ADDR_VIEWCAM_PTR) && s->r[5] != s->r[4]) {
             check_cut(s->r[5]);
             update_special(s->r[5]);
-            if (!s_suspended) rotate_camera(s->r[5], "view camera source");
+            if (!s_suspended) {
+                rotate_camera(s->r[5], "view camera source");
+                const uint32_t src = s->r[5];       /* where the picture looks: the free aim's start */
+                const float dx = rdf(src + 0x20) - rdf(src + 0x10), dz = rdf(src + 0x28) - rdf(src + 0x18);
+                if (dx * dx + dz * dz > 1.0f) { s_view_look = atan2f(dx, dz); s_view_look_ok = 1; }
+            } else aim_check(s->r[5]);
+        }
+        break;
+    case HOOK_PLAYER_POSE:     /* a0 = Aya's object */
+        s_aya = s->r[4];
+        break;
+    case HOOK_MAT_FROM_YAW:    /* a0 = object, $f13 = its facing */
+        if (s->r[4] != s_aya || !s_aya) break;
+        if (!s_free_aim || !s_aiming || s_aim_stick) { aim_release(); break; }   /* the game keeps the facing from her matrix */
+        {
+            /* The game's lock-on (Aya + 0x434: the target, -1 = none) picks an enemy when L is
+             * pressed near one; its aim point is then the enemy. Free aim leaves that alone until
+             * the mouse / right stick moves the aim, then drops the lock and aims by hand. */
+            const uint32_t lock = s_aya + 0x434u;
+            if (!s_aim_moved && MEM_R32(lock) != 0xFFFFFFFFu) {
+                s_aim_active = s_aim_pending = 0;   /* when the aim moves, start from the lock-on */
+                break;
+            }
+            if (!s_aim_active) {
+                if (s_aim_pending) s_aim_yaw = s_aim_look - AIM_CAM_OFF;   /* where the camera looked */
+                else s_aim_yaw = s->f[13];                                   /* from the lock-on */
+                s_aim_pitch = 0.0f; s_aim_active = 1;
+                static int n = 0;
+                if (n++ < 40) fprintf(stderr, "twinstick: free aim %s (Aya %.2f -> %.2f)\n",
+                                      s_aim_pending ? "from the camera" : "takes over from the lock-on", s->f[13], s_aim_yaw);
+            }
+            s_aim_pending = 0;
+            if (s_aim_moved) MEM_W32(lock, 0xFFFFFFFFu);
+        }
+        if (s_aim_active) {
+            /* Absolute: the game reads her facing back from the matrix every frame, so an added
+             * turn would add up. */
+            s->f[13] = s_aim_yaw;
+            /* The aim direction the game latched when L was pressed (Aya + 0x13a0, a copy at
+             * +0x13b0; unit vector): her aim point, the aim camera and so the crosshair follow it. */
+            const float cp = cosf(s_aim_pitch), dx = sinf(s_aim_yaw) * cp, dy = sinf(s_aim_pitch), dz = cosf(s_aim_yaw) * cp;
+            for (uint32_t o = 0x13a0; o <= 0x13b0; o += 0x10) { wrf(s_aya + o, dx); wrf(s_aya + o + 4, dy); wrf(s_aya + o + 8, dz); }
         }
         break;
     default: break;
