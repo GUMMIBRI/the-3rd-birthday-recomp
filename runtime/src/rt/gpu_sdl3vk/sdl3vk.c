@@ -41,7 +41,7 @@ static VkQueue          s_queue;
 static VkCommandPool    s_pool;
 static VkCommandBuffer  s_cmd;
 static VkFence          s_fence;
-static VkSemaphore      s_sem_acq, s_sem_done;
+static VkSemaphore      s_sem_acq, s_sem_done[8];   /* done: one per swapchain image (free again once that image is acquired) */
 
 static VkSwapchainKHR s_swap;
 static VkFormat       s_swap_fmt;
@@ -1042,7 +1042,7 @@ int sdl3vk_init(const char *title) {
     VK_TRY(vkCreateFence(s_dev, &fci, NULL, &s_fence));
     VkSemaphoreCreateInfo sci2 = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     VK_TRY(vkCreateSemaphore(s_dev, &sci2, NULL, &s_sem_acq));
-    VK_TRY(vkCreateSemaphore(s_dev, &sci2, NULL, &s_sem_done));
+    for (int i = 0; i < 8; i++) VK_TRY(vkCreateSemaphore(s_dev, &sci2, NULL, &s_sem_done[i]));
 
     /* Persistently-mapped upload buffer + the device-local blit source image. */
     VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1416,16 +1416,21 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
 
         if (s_shot_req) { shot_record(src, srcw, srch); s_shot_req = 0; }
 
-        /* fb image -> swapchain, aspect-correct letterbox blit */
+        /* fb image -> swapchain, aspect-correct letterbox blit. The layout change must come
+         * after the acquire semaphore wait (TRANSFER stage), or it can run while the display
+         * still reads the image: tiles of the frame then come out black on AMD (issue #9). */
         barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         {
             VkClearColorValue black = {{0, 0, 0, 1}};
             VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
             vkCmdClearColorImage(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                  &black, 1, &rng);
         }
+        barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);   /* the clear, then the frame over it */
         int dw = (int)s_swap_ext.width, dh = (int)s_swap_ext.height;
         /* widescreen: a GE frame is drawn squeezed; movies and CPU-written frames are not */
         const float wsf = do_upload ? 1.0f : sdl3vk_widescreen_factor();
@@ -1461,12 +1466,12 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         si.commandBufferCount = 1;
         si.pCommandBuffers = &s_cmd;
         si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores = &s_sem_done;
+        si.pSignalSemaphores = &s_sem_done[idx];
         vkQueueSubmit(s_queue, 1, &si, s_fence);
 
         VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         pi.waitSemaphoreCount = 1;
-        pi.pWaitSemaphores = &s_sem_done;
+        pi.pWaitSemaphores = &s_sem_done[idx];
         pi.swapchainCount = 1;
         pi.pSwapchains = &s_swap;
         pi.pImageIndices = &idx;
@@ -1522,7 +1527,7 @@ void sdl3vk_shutdown(void) {
     if (s_staging)     vkDestroyBuffer(s_dev, s_staging, NULL);
     if (s_staging_mem) vkFreeMemory(s_dev, s_staging_mem, NULL);
     if (s_sem_acq)     vkDestroySemaphore(s_dev, s_sem_acq, NULL);
-    if (s_sem_done)    vkDestroySemaphore(s_dev, s_sem_done, NULL);
+    for (int i = 0; i < 8; i++) if (s_sem_done[i]) vkDestroySemaphore(s_dev, s_sem_done[i], NULL);
     if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
     if (s_pool)        vkDestroyCommandPool(s_dev, s_pool, NULL);
     if (s_dev)         vkDestroyDevice(s_dev, NULL);

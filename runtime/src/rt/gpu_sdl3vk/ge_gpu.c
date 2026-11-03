@@ -350,6 +350,19 @@ static void to_layout(VkCommandBuffer cmd, VkImage img, VkImageAspectFlags aspec
     *cur = want;
 }
 
+/* Before every render pass: everything written so far (the previous passes' depth and color,
+ * copies, uploads) is visible to it. Layout changes carry their own barrier, but the depth
+ * buffer never changes layout between passes and a finished target is sampled in the same
+ * layout it was left in, so without this nothing orders those. NVIDIA got away with it; on AMD
+ * passes overlap and read stale depth / color in tiles (issue #9: flickering black squares). */
+static void pass_barrier(VkCommandBuffer cmd) {
+    VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0, 1, &mb, 0, NULL, 0, NULL);
+}
+
 /* Host time spent in a few hot paths, reported with the 5 s stats line (microseconds). */
 static uint64_t s_t_wait, s_t_texdec, s_t_readback, s_t_upload;
 static unsigned long s_n_wait;
@@ -580,6 +593,7 @@ static int submit_pending(void) {
     VkRenderPassBeginInfo rbi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     rbi.renderPass = s_rp; rbi.framebuffer = t->fb;
     rbi.renderArea.extent.width = SW; rbi.renderArea.extent.height = SH;
+    pass_barrier(s_cmd);
     vkCmdBeginRenderPass(s_cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 
     VkViewport vp = { 0, 0, (float)SW, (float)SH, 0.0f, 1.0f };
@@ -2165,7 +2179,8 @@ static int fi_replay(Target *disp, float t) {
         VkRenderPassBeginInfo rbi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
         rbi.renderPass = s_rp; rbi.framebuffer = sh->fb;
         rbi.renderArea.extent.width = SW; rbi.renderArea.extent.height = SH;
-        vkCmdBeginRenderPass(s_cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+        pass_barrier(s_cmd);
+    vkCmdBeginRenderPass(s_cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
         VkViewport vp = { 0, 0, (float)SW, (float)SH, 0.0f, 1.0f };
         vkCmdSetViewport(s_cmd, 0, 1, &vp);
         vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_vbuf, &zero);
