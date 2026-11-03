@@ -3,11 +3,13 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.6 - 2026-11-03
 
 - AMD cards: fixed (hopefully!) the black squares flickering over the screen. the game was
   telling the graphics card to draw stuff in an order NVIDIA didn't care about but AMD does.
   thanks TheDimensioner for the video
+
+no need to press "Prepare game" again this time, just update and play
 
 ## 0.9.5 - 2026-11-01
 
