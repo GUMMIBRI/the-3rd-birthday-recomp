@@ -3,6 +3,12 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- AMD cards: fixed (hopefully!) the black squares flickering over the screen. the game was
+  telling the graphics card to draw stuff in an order NVIDIA didn't care about but AMD does.
+  thanks TheDimensioner for the video
+
 ## 0.9.5 - 2026-11-01
 
 - free aim! hold L (right mouse) and you aim where the camera is looking, then the mouse or the
