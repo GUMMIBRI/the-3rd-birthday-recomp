@@ -16,7 +16,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
 
-#include <windows.h>
+#include "platform/clock.h"
 #include "platform/fiber.h"
 #include <stdio.h>
 #include <string.h>
@@ -134,23 +134,23 @@ void sched_wait_vblank(void) {
  * delay waits, so everything runs as fast as the host allows. */
 static uint64_t s_vtime_us = 0;
 static int s_pace_on = -1;
-static LARGE_INTEGER s_qfreq;
-static LONGLONG s_qpc0;
+static int64_t s_qfreq;
+static int64_t s_qpc0;
 static double s_vbl_next;            /* QPC counts: when the next vblank is due */
 static uint64_t s_vbl_next_us = 0;   /* same deadline on the s_vtime_us scale (cheap compare) */
 
 static void vbl_next_us_sync(void) {
-    s_vbl_next_us = (uint64_t)((s_vbl_next - (double)s_qpc0) * 1000000.0 / (double)s_qfreq.QuadPart);
+    s_vbl_next_us = (uint64_t)((s_vbl_next - (double)s_qpc0) * 1000000.0 / (double)s_qfreq);
 }
 
 static void pace_setup(void) {
     if (s_pace_on >= 0) return;
     s_pace_on = getenv("SR_NOVBPACE") ? 0 : 1;
-    timeBeginPeriod(1);
-    QueryPerformanceFrequency(&s_qfreq);
-    LARGE_INTEGER c; QueryPerformanceCounter(&c);
-    s_qpc0 = c.QuadPart;
-    s_vbl_next = (double)c.QuadPart;
+    sr_clock_setup();
+    s_qfreq = sr_clock_frequency();
+    int64_t c = sr_clock_ticks();
+    s_qpc0 = c;
+    s_vbl_next = (double)c;
     vbl_next_us_sync();
 }
 
@@ -167,9 +167,9 @@ void sched_set_fast_forward(int on) {
     pace_setup();
     if (on && !s_ff && s_pace_on > 0) { s_pace_on = 0; s_ff = 1; }
     else if (!on && s_ff) {
-        LARGE_INTEGER c; QueryPerformanceCounter(&c);
-        s_qpc0 = c.QuadPart - (LONGLONG)((double)s_vtime_us * (double)s_qfreq.QuadPart / 1e6);
-        s_vbl_next = (double)c.QuadPart;
+        int64_t c = sr_clock_ticks();
+        s_qpc0 = c - (int64_t)((double)s_vtime_us * (double)s_qfreq / 1e6);
+        s_vbl_next = (double)c;
         vbl_next_us_sync();
         s_pace_on = 1; s_ff = 0;
     }
@@ -177,8 +177,8 @@ void sched_set_fast_forward(int on) {
 int sched_fast_forward(void) { return s_ff; }
 
 static uint64_t qpc_us(void) {
-    LARGE_INTEGER c; QueryPerformanceCounter(&c);
-    return (uint64_t)((double)(c.QuadPart - s_qpc0) * 1000000.0 / (double)s_qfreq.QuadPart);
+    int64_t c = sr_clock_ticks();
+    return (uint64_t)((double)(c - s_qpc0) * 1000000.0 / (double)s_qfreq);
 }
 
 /* Advance the virtual clock to "now" (real-time mode only; monotonic). */
@@ -208,8 +208,8 @@ static void sleep_until_us(uint64_t target_us) {
         uint64_t now = qpc_us();
         if (now >= target_us) break;
         uint64_t d = target_us - now;
-        if (d > 2000) Sleep((DWORD)((d - 1000) / 1000));
-        else if (d > 300) Sleep(1);
+        if (d > 2000) sr_clock_sleep_ms((uint32_t)((d - 1000) / 1000));
+        else if (d > 300) sr_clock_sleep_ms(1);
         /* else spin out the remainder via the loop */
     }
     s_idle_us += qpc_us() - t0;
@@ -231,22 +231,22 @@ float sched_late_fraction(void) { return s_late_avg; }
 static void vblank_pace(void) {
     pace_setup();
     if (!s_pace_on) { s_vtime_us += 16667; return; }   /* turbo: virtual frame per vblank */
-    double period = (double)s_qfreq.QuadPart / 59.94;
-    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    double period = (double)s_qfreq / 59.94;
+    int64_t now = sr_clock_ticks();
     {
-        const double late_ms = ((double)now.QuadPart - s_vbl_next) * 1000.0 / (double)s_qfreq.QuadPart;
+        const double late_ms = ((double)now - s_vbl_next) * 1000.0 / (double)s_qfreq;
         s_late_avg += ((late_ms > 4.0 ? 1.0f : 0.0f) - s_late_avg) * (1.0f / 60.0f);
     }
-    if (s_vbl_next > (double)now.QuadPart) {
+    if (s_vbl_next > (double)now) {
         const uint64_t t0 = qpc_us();
-        double ms = (s_vbl_next - (double)now.QuadPart) * 1000.0 / (double)s_qfreq.QuadPart;
-        if (ms > 2.0) Sleep((DWORD)(ms - 1.0));
-        do { QueryPerformanceCounter(&now); } while ((double)now.QuadPart < s_vbl_next);
+        double ms = (s_vbl_next - (double)now) * 1000.0 / (double)s_qfreq;
+        if (ms > 2.0) sr_clock_sleep_ms((uint32_t)(ms - 1.0));
+        do { now = sr_clock_ticks(); } while ((double)now < s_vbl_next);
         s_idle_us += qpc_us() - t0;
     }
     s_vbl_next += period;
     /* fell behind by more than a frame (slow scene, breakpoint): resync, don't fast-forward */
-    if ((double)now.QuadPart > s_vbl_next) s_vbl_next = (double)now.QuadPart;
+    if ((double)now > s_vbl_next) s_vbl_next = (double)now;
     vbl_next_us_sync();
     vtime_refresh();
 }
@@ -255,9 +255,9 @@ static void vblank_pace(void) {
 static uint64_t vblank_due_us(void) {
     pace_setup();
     if (!s_pace_on) return 0;
-    LARGE_INTEGER now; QueryPerformanceCounter(&now);
-    if ((double)now.QuadPart >= s_vbl_next) return 0;
-    return (uint64_t)((s_vbl_next - (double)now.QuadPart) * 1000000.0 / (double)s_qfreq.QuadPart);
+    int64_t now = sr_clock_ticks();
+    if ((double)now >= s_vbl_next) return 0;
+    return (uint64_t)((s_vbl_next - (double)now) * 1000000.0 / (double)s_qfreq);
 }
 
 /* Run a guest interrupt handler (vblank, alarm) on the interrupt stack with the interrupted

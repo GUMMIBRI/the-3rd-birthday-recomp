@@ -1,6 +1,7 @@
 # PS5 port development
 
-Status: initial source work, **not a PS5 executable or playable port**.
+Status: native scheduler/context source compiles for PS5, **not a linked PS5
+executable or playable port**. Resumption prompt: `../PROJECT-PROMPT.md`.
 
 Fork: https://github.com/GUMMIBRI/the-3rd-birthday-recomp
 
@@ -44,7 +45,9 @@ No game execution, full game build, console packaging or console installation.
 
 ## Ordered milestones
 
-Owner: Cinder for initial integration; no separate project lead assigned yet.
+Owner: this project's lead chat owns implementation/integration and Git; Cinder
+provides PS5 guidance and bounded code review. Mods/checks subagents have completed
+their isolated reports in `PS5-MODS.md` and `PS5-REVIEW.md`.
 
 1. **Console host foundation.** Verify SDK context facilities and memory budget;
    replace Windows timing, memory mapping, filesystem and dynamic-module calls.
@@ -76,3 +79,52 @@ forks, only the `master` branch, and recent releases v0.9.6/v0.9.5/v0.9.4 each
 containing a Windows ZIP. Public searches for this repository with PS5 and
 PlayStation 5 found no port. This establishes no public PS5 port found, rather
 than proving that no private or unindexed work exists.
+
+## Native host batch (2026-11-06)
+
+Implemented original x86-64 System V cooperative context switching in
+`runtime/src/rt/platform/fiber_sysv.c` and `.S`. It preserves callee-saved GPRs,
+RSP, MXCSR and x87 control state; constructs an aligned initial C frame and return
+trap; validates stack sizes; uses two guard pages; checks same-host-thread use;
+and provides root detach after child destruction. It has no CPU interpreter/JIT.
+The API assumes trusted live handles and sequential use by one host thread;
+concurrent attachment and cross-stack C++ unwinding are unsupported.
+
+`platform/clock.h` replaces direct Windows timing/sleep dependencies in the
+scheduler with host clock calls. Windows retains QPC behavior; the console path
+uses monotonic clock and interrupted-sleep retry.
+
+Actual `x86_64-sie-ps5` target objects compiled successfully for the scheduler,
+native context implementation, assembly switch, and context/FP-control check.
+Reproduce with `scripts/check_ps5_host.ps1 -Compiler <clang> -Sysroot <public-sdk-target>`.
+The existing Windows context round-trip still passes and the Windows scheduler
+translation unit still compiles. The native context check is **compiled only**;
+neither its FP assertions nor context switching have run on PS5.
+
+Cinder and the independent checker reviewed the switch/layout and timing changes.
+Cinder identified the critical stack commitment limitation: mprotect of a whole
+64 MiB range is not proof of Windows-style incremental commitment on PS5. The
+backend now accounts for all writable stack bytes under a conservative 512 MiB
+aggregate ceiling, returning allocation failure beyond it. At 64 MiB per context
+this admits at most eight child contexts. This is an explicit safety bound,
+**not evidence that the game's thread demand or the console's mapping budget fits**.
+No demand-page commitment behavior is claimed. The next required work is to verify
+the selected mmap/mprotect/thread/clock providers and establish the game-compatible
+stack backing policy, then link a native host executable and audit imports/syscalls.
+
+Qwen testing was requested but **not run**: Cinder confirms the prior normal-path
+automatic approval rejection still blocks invocation; no permitted current route
+is available. Do not bypass it with another invocation or policy changes. The
+independent helper is unassigned and Cinder exclusively coordinates it.
+
+No console writes, game launch, installation, package or public binary release.
+Current renderer/media/audio/storage/game-loader integration remains incomplete.
+
+## Additional port search (2026-11-06)
+
+Public web and GitHub repository searches found no native PS4 game port. The
+other [HD PC launcher](https://github.com/kaiwolft/3rd-BIrthday-Launcher) states
+that it uses PPSSPP; [PSP2PS4-FPKG](https://github.com/jsimesenmac/PSP2PS4-FPKG)
+describes PSP emulators for PS4. These are not native PS4 game implementations
+and are not being used as this port's execution architecture. No other native
+game codebase was established by this search.

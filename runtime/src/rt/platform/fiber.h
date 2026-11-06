@@ -7,7 +7,17 @@
 #include <stddef.h>
 #include <stdlib.h>
 
-#if defined(_WIN32)
+#if defined(SR_FIBER_SYSV)
+#if !defined(__x86_64__) || defined(_WIN32)
+#error "SR_FIBER_SYSV requires the x86-64 System V ABI"
+#endif
+#define SR_FIBER_ENTRY
+void *sr_fiber_attach(void);
+void *sr_fiber_create(size_t commit, size_t reserve, void (*entry)(void *), void *arg);
+void sr_fiber_switch(void *fiber);
+void sr_fiber_delete(void *fiber);
+void sr_fiber_detach(void);
+#elif defined(_WIN32)
 #include <windows.h>
 #define SR_FIBER_ENTRY CALLBACK
 static inline void *sr_fiber_attach(void) { return ConvertThreadToFiber(NULL); }
