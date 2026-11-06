@@ -17,6 +17,7 @@
 #include "recomp.h"
 
 #include <windows.h>
+#include "platform/fiber.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -73,7 +74,8 @@ static uint32_t resolve_thread_uid(uint32_t uid) {
 void sched_init(CpuState *cpu) {
     s_cpu = cpu;
     s_gp = cpu->r[28];           /* the driver seeded gp from the module's # init */
-    s_sched_fiber = ConvertThreadToFiber(NULL);
+    s_sched_fiber = sr_fiber_attach();
+    if (!s_sched_fiber) { fprintf(stderr, "scheduler: host context attachment failed\n"); abort(); }
     sr_sched_on = 1;
     sr_timeslice = TIMESLICE;
 }
@@ -341,7 +343,7 @@ static void deliver_alarms(void) {
     }
 }
 
-static void CALLBACK fiber_proc(void *param) {
+static void SR_FIBER_ENTRY fiber_proc(void *param) {
     TCB *t = (TCB *)param;
     for (;;) {
         /* Entry into the thread body: set up args and the standard return address (0). */
@@ -351,7 +353,7 @@ static void CALLBACK fiber_proc(void *param) {
         dispatch(s_cpu, t->entry);    /* runs until the thread returns or exits */
         /* Returned without calling sceKernelExitThread: treat as exit. */
         t->state = TH_DORMANT;
-        SwitchToFiber(s_sched_fiber); /* back to scheduler; fiber may be reused if restarted */
+        sr_fiber_switch(s_sched_fiber); /* back to scheduler; fiber may be reused if restarted */
     }
 }
 
@@ -411,7 +413,7 @@ void sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
      * and with it the mission scene-switch fade). Throw the old fiber away and re-seed the
      * register file so the scheduler re-enters the body fresh. */
     if (t->started && t->state == TH_DORMANT) {
-        if (t->fiber) { DeleteFiber(t->fiber); t->fiber = NULL; }
+        if (t->fiber) { sr_fiber_delete(t->fiber); t->fiber = NULL; }
         t->started = 0;
         t->wakeups = 0; t->sleeping = 0; t->wait_obj = 0; t->wake = 0;
         memset(&t->saved, 0, sizeof(t->saved));
@@ -443,7 +445,7 @@ static int pick_next(void) {
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
  * next thread. Called from a thread fiber. */
 static void switch_to_scheduler(void) {
-    SwitchToFiber(s_sched_fiber);
+    sr_fiber_switch(s_sched_fiber);
 }
 
 void sr_yield(CpuState *s) {
@@ -808,11 +810,12 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             t->started = 1;
             /* Guest calls become native C calls, so a deep guest call chain needs a deep host
              * stack. Reserve a large fiber stack (committed on demand) to match. */
-            t->fiber = CreateFiberEx((SIZE_T)1 << 18, (SIZE_T)64 << 20, 0, fiber_proc, t);
+            t->fiber = sr_fiber_create((size_t)1 << 18, (size_t)64 << 20, fiber_proc, t);
+            if (!t->fiber) { fprintf(stderr, "scheduler: host stack allocation failed\n"); abort(); }
         }
         const uint64_t run0 = qpc_us();
         s_run0 = run0;
-        SwitchToFiber(t->fiber);           /* run until it yields/blocks/exits */
+        sr_fiber_switch(t->fiber);           /* run until it yields/blocks/exits */
         t->cpu_us += qpc_us() - run0;
         s_cur = -1;
         s_tick++;
