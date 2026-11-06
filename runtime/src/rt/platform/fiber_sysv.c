@@ -8,6 +8,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <string.h>
+#ifdef SR_PS5_DIRECT_STACKS
+#include <ps5platform/shm.h>
+#endif
 
 typedef struct {
     uintptr_t rsp, rbx, rbp, r12, r13, r14, r15;
@@ -21,6 +24,10 @@ typedef struct SrSysvFiber {
     void *mapping;
     size_t mapping_size;
     size_t stack_size;
+#ifdef SR_PS5_DIRECT_STACKS
+    struct ps5_shm backing;
+    void *view;
+#endif
     void (*entry)(void *);
     void *arg;
 } SrSysvFiber;
@@ -62,7 +69,11 @@ void *sr_fiber_create(size_t commit, size_t reserve, void (*entry)(void *), void
     require_owner();
     if (!entry || reserve < 256 * 1024 || reserve > 64 * 1024 * 1024 || children >= 128)
         return NULL;
+#ifdef SR_PS5_DIRECT_STACKS
+    page_result = 0x10000; /* Direct allocations rounded to 64 KiB, guard on both sides. */
+#else
     page_result = sysconf(_SC_PAGESIZE);
+#endif
     if (page_result <= 0) return NULL;
     page = (size_t)page_result;
     if (page > 1024 * 1024 || (page & (page - 1))) return NULL;
@@ -73,12 +84,28 @@ void *sr_fiber_create(size_t commit, size_t reserve, void (*entry)(void *), void
     if (!fiber) return NULL;
     fiber->mapping_size = usable + 2 * page;
     fiber->stack_size = usable;
+#ifdef SR_PS5_DIRECT_STACKS
+    if (ps5_vrange_reserve(fiber->mapping_size, NULL, page, &fiber->mapping) != 0) {
+        free(fiber); return NULL;
+    }
+    if (ps5_shm_create(usable, &fiber->backing) != 0) {
+        if (ps5_vrange_release(fiber->mapping, fiber->mapping_size) != 0) abort();
+        free(fiber); return NULL;
+    }
+    if (ps5_shm_map(&fiber->backing, 0, usable, (char *)fiber->mapping + page,
+                    PS5_SHM_READ | PS5_SHM_WRITE, PS5_SHM_FIXED, &fiber->view) != 0) {
+        ps5_shm_destroy(&fiber->backing);
+        if (ps5_vrange_release(fiber->mapping, fiber->mapping_size) != 0) abort();
+        free(fiber); return NULL;
+    }
+#else
     fiber->mapping = mmap(NULL, fiber->mapping_size, PROT_NONE,
                          MAP_PRIVATE | MAP_ANON, -1, 0);
     if (fiber->mapping == MAP_FAILED) { free(fiber); return NULL; }
     if (mprotect((char *)fiber->mapping + page, usable, PROT_READ | PROT_WRITE) != 0) {
         munmap(fiber->mapping, fiber->mapping_size); free(fiber); return NULL;
     }
+#endif
     top = ((uintptr_t)fiber->mapping + page + usable) & ~(uintptr_t)15;
     /* ret consumes entry; at C entry RSP % 16 == 8, with a real return trap. */
     top -= sizeof(uintptr_t); *(uintptr_t *)top = (uintptr_t)fiber_returned;
@@ -107,7 +134,13 @@ void sr_fiber_delete(void *target) {
     if (!fiber) return;
     if (fiber == current || fiber == root) abort();
     protected_stack_bytes -= fiber->stack_size;
+#ifdef SR_PS5_DIRECT_STACKS
+    if (ps5_shm_unmap(fiber->view, fiber->stack_size, PS5_SHM_KEEP_RESERVED) != 0) abort();
+    ps5_shm_destroy(&fiber->backing);
+    if (ps5_vrange_release(fiber->mapping, fiber->mapping_size) != 0) abort();
+#else
     if (munmap(fiber->mapping, fiber->mapping_size) != 0) abort();
+#endif
     free(fiber);
     --children;
 }

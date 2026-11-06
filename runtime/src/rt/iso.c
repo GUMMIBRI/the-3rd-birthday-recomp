@@ -9,7 +9,16 @@
  */
 
 #define _CRT_SECURE_NO_WARNINGS
+#ifndef _WIN32
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
 #include "iso.h"
+#include "platform/iso_file.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +32,7 @@ static uint32_t s_iso_offset = 0;
 static void detect_wrapper(void) {
     s_iso_offset = 0;
     unsigned char pvd[SECTOR];
-    fseek(s_iso, 16L * SECTOR, SEEK_SET);
+    if (sr_iso_seek(s_iso, INT64_C(16) * SECTOR, SEEK_SET) != 0) return;
     if (fread(pvd, 1, SECTOR, s_iso) != SECTOR) return;
     if (pvd[0] != 1 || memcmp(pvd + 1, "CD001", 5) != 0) return;
     
@@ -31,11 +40,12 @@ static void detect_wrapper(void) {
     memcpy(&root_lba, pvd + 156 + 2, 4);
     memcpy(&root_size, pvd + 156 + 10, 4);
     
+    if (root_size > UINT32_MAX - (SECTOR - 1)) return;
     uint32_t nbytes = ((root_size + SECTOR - 1) / SECTOR) * SECTOR;
     unsigned char *buf = (unsigned char *)malloc(nbytes);
     if (!buf) return;
-    fseek(s_iso, (long)root_lba * SECTOR, SEEK_SET);
-    if (fread(buf, 1, nbytes, s_iso) == nbytes) {
+    if (sr_iso_seek(s_iso, (int64_t)root_lba * SECTOR, SEEK_SET) == 0 &&
+            fread(buf, 1, nbytes, s_iso) == nbytes) {
         uint32_t o = 0;
         while (o < root_size) {
             unsigned char rl = buf[o];
@@ -65,9 +75,14 @@ int iso_init(void) {
     return 0;
 }
 
-static void read_sectors(uint32_t lba, void *buf, uint32_t bytes) {
-    _fseeki64(s_iso, (int64_t)(s_iso_offset + lba) * SECTOR, SEEK_SET);
-    if (fread(buf, 1, bytes, s_iso) != bytes) memset(buf, 0, bytes);
+static int read_sectors(uint32_t lba, void *buf, uint32_t bytes) {
+    /* Widen before adding: a wrapped extent must not wrap at UINT32_MAX. */
+    if (sr_iso_seek(s_iso, ((int64_t)s_iso_offset + lba) * SECTOR, SEEK_SET) != 0 ||
+            fread(buf, 1, bytes, s_iso) != bytes) {
+        memset(buf, 0, bytes);
+        return -1;
+    }
+    return 0;
 }
 
 /* Normalize a guest path: drop a leading device ("disc0:", "umd0:", "ms0:") and any leading
@@ -98,9 +113,11 @@ static int name_eq(const char *comp, int complen, const unsigned char *isoname, 
  * out_size/out_isdir and returns 1. */
 static int dir_find(uint32_t lba, uint32_t size, const char *comp, int complen,
                     uint32_t *out_lba, uint32_t *out_size, int *out_isdir) {
+    if (!size || size > UINT32_MAX - (SECTOR - 1)) return 0;
     uint32_t nbytes = ((size + SECTOR - 1) / SECTOR) * SECTOR;
     unsigned char *buf = (unsigned char *)malloc(nbytes);
-    read_sectors(lba, buf, nbytes);
+    if (!buf) return 0;
+    if (read_sectors(lba, buf, nbytes) != 0) { free(buf); return 0; }
     uint32_t o = 0;
     int found = 0;
     while (o < size) {
@@ -141,7 +158,7 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     }
 
     unsigned char pvd[SECTOR];
-    read_sectors(16, pvd, SECTOR);
+    if (read_sectors(16, pvd, SECTOR) != 0) return -1;
     if (pvd[0] != 1 || memcmp(pvd + 1, "CD001", 5) != 0) return -1;
     uint32_t lba, size;
     memcpy(&lba, pvd + 156 + 2, 4);
@@ -165,14 +182,19 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
 
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     if (iso_init() != 0) return -1;
-    _fseeki64(s_iso, (int64_t)(s_iso_offset + lba) * SECTOR + (int64_t)offset, SEEK_SET);
-    return (int)fread(dst, 1, bytes, s_iso);
+    if (sr_iso_seek(s_iso, ((int64_t)s_iso_offset + lba) * SECTOR + offset, SEEK_SET) != 0)
+        return -1;
+    size_t got = fread(dst, 1, bytes, s_iso);
+    /* A short EOF read remains a byte count; an actual host I/O error is failure. */
+    return ferror(s_iso) ? -1 : (int)got;
 }
 
 /* Size of the disc image in sectors (after any wrapper offset), for the raw umd0:/umd1: device. */
 uint32_t iso_num_sectors(void) {
     if (iso_init() != 0) return 0;
-    _fseeki64(s_iso, 0, SEEK_END);
-    int64_t n = _ftelli64(s_iso) / SECTOR;
+    if (sr_iso_seek(s_iso, 0, SEEK_END) != 0) return 0;
+    int64_t position = sr_iso_tell(s_iso);
+    if (position < 0) return 0;
+    int64_t n = position / SECTOR;
     return n > s_iso_offset ? (uint32_t)(n - s_iso_offset) : 0;
 }

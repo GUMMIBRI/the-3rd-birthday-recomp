@@ -128,3 +128,35 @@ that it uses PPSSPP; [PSP2PS4-FPKG](https://github.com/jsimesenmac/PSP2PS4-FPKG)
 describes PSP emulators for PS4. These are not native PS4 game implementations
 and are not being used as this port's execution architecture. No other native
 game codebase was established by this search.
+
+## Native application link milestone
+
+The host context check now links as a real title application with pinned public
+PSXS5 startup and linker scripts. Its 16 dynamic imports resolve to public
+libkernel/LibcInternal stubs. Static audit finds no inline syscall instructions,
+TLS sections/symbols/relocations, or payload startup definitions. The SDK shared
+memory platform supplies explicit direct-memory stack backing, guard reservations,
+64 KiB rounding and bounded lifetime. This removes the Linux mmap commitment
+assumption. The provider's void destroy function does not expose direct-memory
+release failure, so hardware leak-free cleanup is not established.
+
+Local conversion produces an SCE application ELF (type 0xfe10) with matching
+entry, six retained allocated sections and preserved BSS. The signed plaintext
+SELF inspection reports valid integrity. These artifacts contain a host-services
+check, **not the game**; no title ID, package, deployment or console run exists.
+Post-conversion symbol/relocation/provider inspection must be expanded before a
+real game release; retained-byte comparison alone does not validate loader behavior.
+
+Reproduce linkage with `scripts/link_ps5_host.ps1 -PlatformRoot <public-prefix>`
+and static checks with `scripts/audit_ps5_host.ps1`. The latter deliberately
+requires this small host target to be TLS-free; adding SDL/game TLS requires a
+separate reviewed runtime contract. Dependency revisions and license selection
+are recorded in `PS5-DEPENDENCIES.md`.
+
+Portable ISO file access now compiles for PS5 and preserves 64-bit positions,
+checked seeks and read errors. Windows synthetic checks cover an 8 GiB seek,
+ISO lookup/read/EOF and failure cases. This is not original game progression.
+
+Next integration: retain the existing native Vulkan GE renderer using the actual
+PS5 SDL_Vulkan provider, connect checked dispatch, replace GDI text/PNG and mod
+filesystem APIs, then link these genuine rendering services with the host app.
