@@ -47,11 +47,14 @@ known to Cinder; use existing connection guidance. Do not touch unrelated consol
 apps, assets or saves. Coordinate deployment and fresh game-closed confirmation
 through current Cinder rules; human owns gameplay qualification.
 
-Immediate batch: extract scheduler timing from Win32; compile Windows regression
-and portable reference objects, obtain PS5 context/toolchain guidance, then bind
-the verified console backend. Continue to real renderer/controller/audio/media/
-game integration. Compilation is source evidence, not playable-game proof.
+Current batch: finish the private native EBOOT USB app folder with original icon,
+metadata, runtime tables/fonts and notices. The real renderer, controller, audio,
+media and generated game code link and convert; no console boot is established.
+Keep native save writes disabled until the actual provider contract is qualified.
+Review the unintegrated read-only anchor candidate with Cinder. Before any USB
+installation, resolve title collisions, present the exact candidate/backup plan
+and obtain fresh closed-game confirmation. Human owns gameplay qualification.
 
 At checkpoint record implemented/compiled/packaged/installed/human-tested status,
-exact checks, blockers and next action in `docs/PS5-PORT.md`. Ask Cinder to review
+exact checks, blockers and next action in `docs/PS5-CURRENT.md`. Ask Cinder to review
 concrete source/diagnostics when blocked; never repeat unchanged failing approaches.
