@@ -191,6 +191,8 @@ class Wfm:
         raise RuntimeError("Upload completion timed out; preserve unfinished staging")
 
     def verify_download(self, remote, expected):
+        require(remote == APP + "/sce_sys/" + remote.rsplit("/", 1)[-1] and
+                expected["size"] <= 65536, "Readback is restricted to small selected app metadata")
         task = self.task_id(self.api("/api/download/prepare", {"paths": remote}, post=True, mutate=True))
         value, total = hashlib.sha256(), 0
         with self.request("/api/download", {"id": task}) as response:
@@ -242,11 +244,15 @@ class Wfm:
         self.wait(task)
         entry = self.listing(directory).get(temporary, {})
         require(entry.get("type") == "-" and entry.get("size") == expected["size"], "Uploaded file metadata mismatch")
-        self.verify_download(directory + "/" + temporary, expected)
+        metadata_readback = directory == APP + "/sce_sys" and final_name == "param.json"
+        if metadata_readback:
+            self.verify_download(directory + "/" + temporary, expected)
         self.rename_sibling(directory + "/" + temporary, final_name)
         entry = self.listing(directory).get(final_name, {})
         require(entry.get("type") == "-" and entry.get("size") == expected["size"], "Renamed file metadata mismatch")
-        report["files"].append(dict(path=directory + "/" + final_name, bytes=expected["size"], sha256=expected["sha256"]))
+        report["files"].append(dict(path=directory + "/" + final_name, bytes=expected["size"],
+                                    local_sha256=expected["sha256"], upload_completed=True,
+                                    remote_type_size_verified=True, remote_sha256_verified=metadata_readback))
         report.pop("unfinished", None)
         save()
 
@@ -443,9 +449,9 @@ def main():
         client.absent(APP + "/sce_sys", "param.json")
         client.upload_verified(APP + "/sce_sys", "param.json", rows["sce_sys/param.json"], report, save)
         verify_app_tree(client, rows, include_metadata=True)
-        report["state"] = "files-delivered-and-readback-verified-not-launched-or-registration-proven"
+        report["state"] = "files-delivered-upload-and-type-size-verified-not-launched-or-registration-proven"
         save()
-        print("Files delivered and readback verified; no launch or registration/playability claim.")
+        print("Files delivered: local hashes, upload completion and remote type/size verified; no launch or registration/playability claim.")
         return 0
     except Exception as error:
         # Do not print endpoint-bearing exception text or perform automatic cleanup.

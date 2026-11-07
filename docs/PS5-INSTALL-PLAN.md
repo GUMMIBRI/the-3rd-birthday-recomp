@@ -77,20 +77,20 @@ an internal path or silently fall back to `/data`.
    exact project folder. Deliver companions, icon and notices first, EBOOT next,
    and `sce_sys/param.json` LAST. Keep param absent on any earlier failure.
 3. Upload each manifest file to a unique temporary sibling name in its owned directory.
-   Verify completion, length and hash, then rename it to the manifest filename.
+   Verify the local streaming hash, task completion and remote regular-file
+   type/length, then rename it to the manifest filename.
    Recheck the full staged file set: all and only the approved files, matching
-   hashes, with no credentials, logs, original ISO or empty user templates added.
+   local source hashes, with no credentials, logs, original ISO or empty user templates added.
    Keep the manifest/transfer receipts private and outside the scanned app.
-4. Hash verification must use an approved genuine server digest or a reviewed
-   scoped readback. Completion/size alone is not a verified hash. Follow Cinder's
-   current transfer policy; if no permitted hash-verification route is available,
-   record that unresolved gate and stop before final activation. Do not claim a
-   hash match from a progress bar or bypass a rejected transfer operation.
+4. The owner's current verification preference is local SHA256, upload completion
+   and remote regular-file type/size. Do not download the EBOOT or ISO solely to
+   hash them. Only selected small metadata may be read back. Record each evidence
+   type honestly: completion/size and local SHA do not establish a remote SHA.
 5. Handle the tester-owned ISO **separately**. Preserve its original local/source
    copy. If the target ISO already exists, verify its identity without overwriting
    an unknown file. If absent and transfer is authorized, upload as a unique
-   temporary file in the owned data directory, verify its complete length/hash
-   against the private owned-ISO receipt, then rename to `ULUS10567.iso` only when
+   temporary file in the owned data directory, verify its local streaming hash,
+   task completion and remote regular-file length, then rename to `ULUS10567.iso` only when
    the final name is positively unused. It is not part of the public app package.
 6. Reconfirm the selected app remains this operation's fresh folder before the
    final param delivery. Stop on unexpected files or metadata; never overwrite.

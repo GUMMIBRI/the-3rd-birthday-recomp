@@ -26,8 +26,9 @@ after fresh project-install authorization. The latest direct human instruction
 removes the blanket all-games-closed requirement: do not stop unrelated games.
 In-use, denied and unknown responses stop delivery; no forced close or reboot is
 performed. Whole-folder atomic activation is not assumed. The tool uploads each
-file under a unique sibling `.part` name with `overwrite=0`, streams a complete
-remote readback for size/SHA256 verification, then uses the proven sibling rename
+file under a unique sibling `.part` name with `overwrite=0`, validates local SHA256
+while streaming the upload, confirms task completion and remote regular-file
+type/size, then uses the proven sibling rename
 API. Companion files, notices and icon precede EBOOT; the separate ISO is completed
 before **`sce_sys/param.json` is delivered last**. Exact app file inventories are
 checked before metadata and after delivery. Earlier failure leaves final app
@@ -134,8 +135,12 @@ source and supplied hash. Its original copy remains untouched. An existing remot
 ISO is preserved and blocks this fresh-delivery tool, even if it may be identical.
 
 Execution creates only fresh, explicit app/data/subdirectories. Every large file,
-including the ISO, is hashed/uploaded/read back in 1 MiB chunks; a full ISO is never
-buffered in memory. Upload completion is observed with bounded task polling.
+including the ISO, is locally hashed and uploaded in 1 MiB chunks; it is never
+downloaded again solely to hash or buffered in memory. Per the owner's current
+preference, only selected small app metadata (`param.json`, at most 64 KiB) is
+read back for a remote hash check. EBOOT, ISO, artwork and companion receipts
+explicitly record local hash, upload completion and remote type/size, with
+`remote_sha256_verified=false`. Upload completion uses bounded task polling.
 Polling observes one task and does not retry a failed transfer. The private JSON
 receipt records verified files, any unfinished upload and the stopping stage.
 Prepare its existing parent directory before use; do not put private receipts in
@@ -157,8 +162,8 @@ does not infer success from HTTP 200 alone. It uses:
 
 Actual installed-version compatibility remains untested. A different schema,
 missing task row, unsupported metadata text response, permission failure or timeout
-stops the tool. No arbitrary fallback endpoint is tried. Streaming readback adds
-network traffic and must be included in the manager-approved transfer slot.
+stops the tool. No arbitrary fallback endpoint is tried. Large-file remote hashes
+are not claimed from upload completion, size or the local source hash.
 
 After file delivery, the receipt deliberately retains `launched=false`,
 `registered=false` and `installed_verified=false`. The human launches and reports
