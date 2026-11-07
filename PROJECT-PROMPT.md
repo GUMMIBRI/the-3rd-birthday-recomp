@@ -44,8 +44,9 @@ Retain exact source revisions, licenses and notices; access permission does not
 grant redistribution rights. Reuse platform services without importing unrelated
 game logic or private data. Do not fetch proprietary Sony SDKs. Console IP is
 known to Cinder; use existing connection guidance. Do not touch unrelated console
-apps, assets or saves. Coordinate deployment and fresh game-closed confirmation
-through current Cinder rules; human owns gameplay qualification.
+apps, assets or saves. Coordinate deployment through current Cinder rules; the
+owner removed the blanket closed-game gate for this fresh USB install. Never
+force-close, reboot or launch a game; human owns gameplay qualification.
 
 Current batch: finish the private native EBOOT USB app folder with original icon,
 metadata, runtime tables/fonts and notices. The real renderer, controller, audio,
@@ -53,7 +54,8 @@ media and generated game code link and convert; no console boot is established.
 Keep native save writes disabled until the actual provider contract is qualified.
 Review the unintegrated read-only anchor candidate with Cinder. Before any USB
 installation, resolve title collisions, present the exact candidate/backup plan
-and obtain fresh closed-game confirmation. Human owns gameplay qualification.
+and use the actual project install authority. Other games need not be closed.
+Hold transfer for Cinder's selected artwork and coherent package.
 
 At checkpoint record implemented/compiled/packaged/installed/human-tested status,
 exact checks, blockers and next action in `docs/PS5-CURRENT.md`. Ask Cinder to review

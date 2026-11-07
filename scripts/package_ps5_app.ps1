@@ -3,16 +3,99 @@ param(
     [string]$EbootPath = 'build/private-game-20261106-r2/native-link/converted-r1/eboot.bin',
     [string]$SceAuditPath = 'build/checks/GAME-SCE-VERIFY.json',
     [string]$OutputDirectory = 'build/private-delivery-r3',
+    [string]$ArtworkManifest,
     [string]$ParamSchemaReference = 'C:/.pe/ps5-native/release-v1.1.6-build20-20261106/PACKAGE-ROOT/PPSA77022/sce_sys/param.json',
     [switch]$Finalize
 )
 # Local private staging only. Never uploads, launches, removes or overwrites an app.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$ownedRoot = [IO.Path]::GetFullPath((Join-Path $root 'build/private-delivery-r3'))
+$privateArtworkSelected = ![string]::IsNullOrWhiteSpace($ArtworkManifest)
+if ($privateArtworkSelected -and !$PSBoundParameters.ContainsKey('OutputDirectory')) { $OutputDirectory = 'build/private-delivery-r4' }
+$ownedName = if ($privateArtworkSelected) { 'build/private-delivery-r4' } else { 'build/private-delivery-r3' }
+$ownedRoot = [IO.Path]::GetFullPath((Join-Path $root $ownedName))
 function Digest([string]$file) { return (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() }
 function JsonFile([string]$file) { return Get-Content -LiteralPath $file -Raw | ConvertFrom-Json }
 function Require([bool]$condition, [string]$message) { if (!$condition) { throw $message } }
+function Prefix([string]$file, [int]$maximum) {
+    $stream = [IO.File]::OpenRead($file)
+    try {
+        $bytes = [byte[]]::new([int][Math]::Min($stream.Length,$maximum))
+        $at = 0
+        while ($at -lt $bytes.Length) {
+            $n = $stream.Read($bytes,$at,$bytes.Length-$at)
+            if ($n -le 0) { throw 'Artwork header read was incomplete' }
+            $at += $n
+        }
+        return ,$bytes
+    } finally { $stream.Dispose() }
+}
+function ArtworkInteger($value, [string]$name) {
+    Require (($value -is [int]) -or ($value -is [long]) -or ($value -is [uint32]) -or ($value -is [uint64])) "Artwork $name must be an integer"
+    Require ($value -gt 0 -and $value -le [long]::MaxValue) "Artwork $name is outside the positive supported range"
+    return [long]$value
+}
+function ArtworkHeader([string]$file, $item) {
+    $width = ArtworkInteger $item.width 'width'
+    $height = ArtworkInteger $item.height 'height'
+    $bytes = Prefix $file 148
+    if ($item.format -ceq 'PNG') {
+        Require ($item.target -ceq 'sce_sys/icon0.png') 'PNG artwork is allowed only at sce_sys/icon0.png'
+        Require ($width -eq 512 -and $height -eq 512) 'Native icon receipt must specify512x512'
+        Require ($bytes.Length -ge 33 -and [Convert]::ToHexString($bytes[0..7]) -eq '89504E470D0A1A0A') 'Icon is not PNG'
+        Require ([Text.Encoding]::ASCII.GetString($bytes,12,4) -ceq 'IHDR' -and [Convert]::ToHexString($bytes[8..11]) -eq '0000000D') 'Invalid PNG IHDR'
+        Require ([Convert]::ToHexString($bytes[16..23]) -eq '0000020000000200' -and $bytes[24] -eq 8 -and $bytes[25] -eq 2 -and $bytes[26] -eq 0 -and $bytes[27] -eq 0 -and $bytes[28] -eq 0) 'Icon must be opaque512x512 RGB8 noninterlaced PNG'
+        return @{format='PNG';width=512;height=512;bitDepth=8;colorType=2;interlace=0;validation='header-and-selected-bytes'}
+    }
+    Require ($item.format -ceq 'DDS' -and $item.target -cin @('sce_sys/pic0.dds','sce_sys/pic1.dds')) 'DDS artwork is allowed only at pic0.dds or pic1.dds'
+    Require ($bytes.Length -ge 128 -and [Text.Encoding]::ASCII.GetString($bytes,0,4) -ceq 'DDS ') 'Artwork is not DDS'
+    Require ([BitConverter]::ToUInt32($bytes,4) -eq 124 -and [BitConverter]::ToUInt32($bytes,76) -eq 32) 'DDS header/pixel-format record sizes are invalid'
+    Require (([BitConverter]::ToUInt32($bytes,8) -band 0x1007) -eq 0x1007) 'DDS required structural flags are missing'
+    Require ([BitConverter]::ToUInt32($bytes,16) -eq $width -and [BitConverter]::ToUInt32($bytes,12) -eq $height) 'DDS dimensions differ from selected receipt'
+    $fourCC = [Text.Encoding]::ASCII.GetString($bytes,84,4)
+    $headerBytes = 128
+    $header = @{format='DDS';width=$width;height=$height;fourCC=$fourCC;pixelFormatFlags=[BitConverter]::ToUInt32($bytes,80);rgbBitCount=[BitConverter]::ToUInt32($bytes,88);validation='structural-header-and-selected-bytes';formatCompatibilityVerified=$false}
+    if ($item.PSObject.Properties.Name -contains 'fourCC') { Require ($item.fourCC -ceq $fourCC) 'DDS fourCC differs from receipt expectation' }
+    if ($fourCC -ceq 'DX10') {
+        Require (($header.pixelFormatFlags -band 4) -ne 0) 'DDS DX10 header requires the FOURCC pixel-format flag'
+        Require ($bytes.Length -ge 148) 'DDS DX10 extension is missing'
+        Require ([BitConverter]::ToUInt32($bytes,140) -gt 0) 'DDS DX10 array size must be positive'
+        $headerBytes = 148
+        $header.dxgiFormat = [BitConverter]::ToUInt32($bytes,128)
+        $header.resourceDimension = [BitConverter]::ToUInt32($bytes,132)
+        $header.arraySize = [BitConverter]::ToUInt32($bytes,140)
+        if ($item.PSObject.Properties.Name -contains 'dxgiFormat') { Require ($item.dxgiFormat -eq $header.dxgiFormat) 'DDS DXGI format differs from receipt expectation' }
+    } else {
+        Require (!($item.PSObject.Properties.Name -contains 'dxgiFormat')) 'DXGI expectation was supplied for a legacy DDS header'
+    }
+    Require ((Get-Item -LiteralPath $file).Length -gt $headerBytes) 'DDS has no payload'
+    return $header
+}
+function PrivateArtwork([string]$receipt) {
+    $receiptFile = (Resolve-Path -LiteralPath $receipt).Path
+    $allowed = [IO.Path]::GetFullPath((Split-Path $root -Parent)) + [IO.Path]::DirectorySeparatorChar
+    Require ($receiptFile.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase)) 'Artwork receipt must stay inside the authorized C:/.pe workspace'
+    $raw = JsonFile $receiptFile
+    Require ((ArtworkInteger $raw.schemaVersion 'schemaVersion') -eq 1 -and $raw.applicationId -ceq 'PPSA77025') 'Unsupported private artwork receipt schema/application'
+    Require ($raw.files -is [Array]) 'Artwork files must be a JSON array'
+    $targets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $files = @()
+    foreach ($item in $raw.files) {
+        Require ($item.source -is [string] -and [IO.Path]::IsPathFullyQualified($item.source)) 'Artwork source must be an absolute local path'
+        Require ($item.target -cin @('sce_sys/icon0.png','sce_sys/pic0.dds','sce_sys/pic1.dds')) 'Unapproved artwork target'
+        Require ($targets.Add($item.target)) 'Duplicate artwork target'
+        Require ($item.sha256 -is [string] -and $item.sha256 -match '^[0-9a-fA-F]{64}$') 'Artwork SHA256 must contain64 hexadecimal digits'
+        $file = (Resolve-Path -LiteralPath $item.source).Path
+        Require ($file.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase)) 'Artwork source is outside the authorized workspace'
+        Require (!(Get-Item -LiteralPath $file).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) 'Artwork source cannot be a reparse-point leaf'
+        $length = ArtworkInteger $item.bytes 'bytes'
+        Require ((Get-Item -LiteralPath $file).Length -eq $length -and (Digest $file) -eq $item.sha256.ToLowerInvariant()) 'Artwork byte count/hash differs from selected receipt'
+        $header = ArtworkHeader $file $item
+        $files += @{source=$file;target=$item.target;expectedSHA256=$item.sha256.ToLowerInvariant();expectedBytes=$length;header=$header}
+    }
+    Require ($targets.Contains('sce_sys/icon0.png')) 'Private artwork selection must include its mandatory icon; no placeholder fallback'
+    return @{receipt=$receiptFile;receiptSHA256=(Digest $receiptFile);files=$files;provenanceLocation='outside-app-private-receipt';formatCompatibilityVerified=$false}
+}
 Push-Location $root
 try {
     $base = (Resolve-Path -LiteralPath $PlatformRoot).Path
@@ -40,13 +123,14 @@ try {
     $reference = JsonFile $schemaFile
     $schemaKeys = @('ageLevel','applicationCategoryType','applicationDrmType','attribute','attribute2','attribute3','conceptId','contentBadgeType','contentId','contentVersion','downloadDataSize','gameIntent','localizedParameters','masterVersion','requiredSystemSoftwareVersion','sdkVersion','titleId','versionFileUri')
     Require (@(Compare-Object ($schemaKeys | Sort-Object) ($reference.PSObject.Properties.Name | Sort-Object)).Count -eq 0) 'Reference metadata field set is unsupported'
-    $iconSource = Join-Path $root 'runtime/assets/ps5/icon0.png'
-    Require ((Digest $iconSource) -eq '6bf20bf297ebaad8c7c4361bab1cced973eaaaa9d0d2d5b295134068cc004824') 'Original icon differs from reviewed512x512 asset'
-    $iconBytes = [IO.File]::ReadAllBytes($iconSource)
-    Require ($iconBytes.Length -ge 33 -and [Convert]::ToHexString($iconBytes[0..7]) -eq '89504E470D0A1A0A') 'Required icon is not PNG'
-    Require ([Convert]::ToHexString($iconBytes[16..23]) -eq '0000020000000200' -and $iconBytes[24] -eq 8 -and $iconBytes[25] -eq 2 -and $iconBytes[28] -eq 0) 'Required icon must be opaque512x512 RGB8 noninterlaced PNG'
+    $artwork = if ($privateArtworkSelected) { PrivateArtwork $ArtworkManifest } else { $null }
+    if (!$privateArtworkSelected) {
+        $iconSource = Join-Path $root 'runtime/assets/ps5/icon0.png'
+        Require ((Digest $iconSource) -eq '6bf20bf297ebaad8c7c4361bab1cced973eaaaa9d0d2d5b295134068cc004824') 'Original icon differs from reviewed512x512 asset'
+        $null = ArtworkHeader $iconSource ([pscustomobject]@{format='PNG';target='sce_sys/icon0.png';width=512;height=512})
+    }
     $out = [IO.Path]::GetFullPath((Join-Path $root $OutputDirectory))
-    Require ($out -eq $ownedRoot -or $out.StartsWith($ownedRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) 'Output must stay in ignored build/private-delivery-r3'
+    Require ($out -eq $ownedRoot -or $out.StartsWith($ownedRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) "Output must stay in ignored $ownedName"
     $app = Join-Path $out 'PPSA77025'
     $manifestFile = Join-Path $out 'PACKAGE-MANIFEST.json'
     if (!$Finalize) {
@@ -65,8 +149,12 @@ try {
         }
         $param | ConvertTo-Json -Depth 8 | Set-Content "$app/sce_sys/param.json"
         $copies = @()
-        $copies += @{source=$iconSource;target='sce_sys/icon0.png'}
-        foreach ($name in @('LICENSE.txt','PROVENANCE.md')) { $copies += @{source=(Join-Path $root "runtime/assets/ps5/$name");target="notices/original-icon/$name"} }
+        if ($privateArtworkSelected) {
+            foreach ($item in $artwork.files) { $copies += $item }
+        } else {
+            $copies += @{source=$iconSource;target='sce_sys/icon0.png'}
+            foreach ($name in @('LICENSE.txt','PROVENANCE.md')) { $copies += @{source=(Join-Path $root "runtime/assets/ps5/$name");target="notices/original-icon/$name"} }
+        }
         foreach ($name in @('vfpu_exp2_lut.dat','vfpu_exp2_lut65536.dat','vfpu_rcp_lut.dat','vfpu_sin_lut_delta.dat','vfpu_sin_lut_exceptions.dat','vfpu_sin_lut_interval_delta.dat','vfpu_sin_lut8192.dat')) {
             $copies += @{source=(Join-Path $root "runtime/assets/vfpu/$name");target="assets/vfpu/$name"}
         }
@@ -89,10 +177,14 @@ try {
             New-Item -ItemType Directory -Force (Split-Path $target -Parent) | Out-Null
             Copy-Item -LiteralPath $item.source -Destination $target
             $sourceHash = Digest $item.source
+            if ($item.ContainsKey('expectedSHA256')) {
+                Require ($sourceHash -eq $item.expectedSHA256 -and (Get-Item -LiteralPath $target).Length -eq $item.expectedBytes) "Selected artwork changed during staging: $($item.target)"
+            }
             Require ((Digest $target) -eq $sourceHash) "Copy differs: $($item.target)"
             $copyReceipt += @{path=$item.target;source=$item.source;sha256=$sourceHash;bytes=(Get-Item $target).Length}
         }
-        @'
+        $artDescription = if ($privateArtworkSelected) { 'Artwork is selected by the manager through a private hash-bound receipt. Its provenance is retained outside the app; no license or format compatibility is invented by this staging script.' } else { 'The mandatory512x512 icon is an original rectangle/text placeholder authored for this project, MIT licensed. No unrelated PE1 or tester-owned ISO art was copied.' }
+        $privateReadme = @'
 Parasite Eve 3 — private native PS5 development candidate
 Original game: The 3rd Birthday (USA, ULUS10567).
 
@@ -103,24 +195,31 @@ This package does not include the ISO or a save/settings template.
 
 Native save/write services are explicitly disabled pending qualified providers.
 Boot, rendering, audio, movies and gameplay have not been console-tested.
-The mandatory512x512 icon is an original rectangle/text placeholder authored for
-this project, MIT licensed. No unrelated PE1 or tester-owned ISO art was copied.
+@ARTWORK@
 
-Do not overwrite an existing app. Installation requires the manager's current
-title/path collision check and fresh closed-game confirmation. This staging task
-has not accessed the console, installed, launched or changed any console files.
+Do not overwrite an existing app. Installation authorization and the current
+title/path collision check are manager-owned. The owner allows this fresh PE3
+install without closing other games. In-use, denied or unknown results stop the
+operation; never force-close a game or reboot. This staging task has not accessed
+the console, installed, launched or changed any console files.
 
 The EBOOT contains game-derived translated code prepared from the tester's own
 disc. This is a PRIVATE candidate: do not publish this directory or its manifest.
 Public source: https://github.com/GUMMIBRI/the-3rd-birthday-recomp/tree/ps5-port
 Component notices are retained under notices/. Original rights remain unchanged.
-'@ | Set-Content "$app/README-PRIVATE.txt"
+'@
+        $privateReadme.Replace('@ARTWORK@',$artDescription) | Set-Content "$app/README-PRIVATE.txt"
+        if ($privateArtworkSelected) {
+            Copy-Item -LiteralPath $artwork.receipt -Destination "$out/ARTWORK-RECEIPT.json"
+            Require ((Digest "$out/ARTWORK-RECEIPT.json") -eq $artwork.receiptSHA256) 'Private artwork receipt changed during staging'
+        }
         $files = @(Get-ChildItem -LiteralPath $app -File -Recurse | ForEach-Object {
             @{path=[IO.Path]::GetRelativePath($app,$_.FullName).Replace('\','/');bytes=$_.Length;sha256=(Digest $_.FullName)}
         })
         @{private=$true;applicationId='PPSA77025';displayName='Parasite Eve 3';appRoot=$app
           reviewedEbootSHA256=(Digest $eboot);reviewedSceSHA256=(Digest $sce);sourceResultSHA256=(Digest $resultFile)
           schemaReferenceSHA256=(Digest $schemaFile);files=$files;auxiliaryCopies=$copyReceipt
+          artwork=$artwork;privateArtworkSelected=$privateArtworkSelected
           nativeWritesEnabled=$false;iconIncluded=$true;isoIncluded=$false;saveTemplatesIncluded=$false
           consoleExecuted=$false;installed=$false;playableVerified=$false
         } | ConvertTo-Json -Depth 10 | Set-Content $manifestFile
@@ -130,6 +229,10 @@ Component notices are retained under notices/. Original rights remain unchanged.
     Require ($manifest.iconIncluded -eq $true) 'Mandatory native application icon was not staged'
     Require ($manifest.reviewedEbootSHA256 -eq (Digest $eboot) -and $manifest.reviewedSceSHA256 -eq (Digest $sce)) 'Staged candidate is from another reviewed EBOOT'
     Require ($manifest.sourceResultSHA256 -eq (Digest $resultFile)) 'Reviewed conversion result changed after staging'
+    if ($privateArtworkSelected) {
+        Require ($manifest.privateArtworkSelected -eq $true -and $manifest.artwork.receiptSHA256 -eq $artwork.receiptSHA256) 'Staged candidate uses another private artwork selection'
+        Require ((Digest "$out/ARTWORK-RECEIPT.json") -eq $artwork.receiptSHA256) 'Staged private artwork receipt changed'
+    }
     $actual = @(Get-ChildItem -LiteralPath $app -File -Recurse)
     Require ($actual.Count -eq $manifest.files.Count) 'Candidate file inventory differs from staging manifest'
     foreach ($item in $manifest.files) {
@@ -151,6 +254,7 @@ Component notices are retained under notices/. Original rights remain unchanged.
       fileCount=$actual.Count;plannedApp='/mnt/usb0/homebrew/PPSA77025'
       plannedISO='/mnt/usb0/third-birthday-data/ULUS10567.iso';titleCollisionCheckPending=$true
       nativeWritesEnabled=$false;iconIncluded=$true;artworkRequirementPending=$false
+      privateArtworkSelected=$privateArtworkSelected;artworkFormatCompatibilityVerified=$false
       installed=$false;consoleExecuted=$false;bootVerified=$false;playableVerified=$false
     } | ConvertTo-Json -Depth 5 | Set-Content "$out/STAGING-RESULT.json"
     Write-Output "$state — local private candidate only. Console collision/installation/hardware gates remain separate."

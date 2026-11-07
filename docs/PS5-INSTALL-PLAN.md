@@ -59,19 +59,14 @@ an internal path or silently fall back to `/data`.
    inventory and verify the backup. This fresh-install plan does not authorize
    a whole-directory overwrite: prepare a separate exact update manifest that
    carries forward all user data and obtain approval for that concrete update.
-6. Present this exact candidate, paths and file manifest for **fresh project
-   installation authorization and confirmation that all games are fully closed**.
-   A prior deployment's confirmation or another project's approval is stale.
-   Do not launch/close a game to obtain the condition automatically. Include any
-   required staging-directory creation and same-volume rename in the authorization.
-
-A suitable final approval request, after the gates above have concrete receipts,
-is: “Install this reviewed private Parasite Eve 3 candidate to
-`/mnt/usb0/homebrew/PPSA77025`, with the separately owned ISO at
-`/mnt/usb0/third-birthday-data/ULUS10567.iso`, using the attached manifest and
-temporary verified staging. Please confirm installation and that all games are
-fully closed. The game will not be launched automatically.” This document does
-not ask or record that approval now.
+6. The owner authorized this fresh PE3 USB0 app/ISO installation through Cinder.
+   The subsequent direct owner instruction explicitly removes the blanket
+   all-games-closed gate. Do not demand closure or stop unrelated games. Coordinate
+   actual same-app installer conflicts and fail on in-use, denied or unknown errors
+   without bypass, force-close, reboot or automatic launch. Open games are not
+   evidence that filesystem locks or replacements are safe; preserve the fresh
+   destination and verified-file requirements. Transfer remains held until Cinder's
+   exact artwork selection and refreshed coherent package are ready.
 
 ## Recoverable file delivery after authorization
 

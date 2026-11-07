@@ -27,6 +27,12 @@ DATA = USB + "/third-birthday-data"
 ISO = DATA + "/ULUS10567.iso"
 ISO_BYTES = 1467547648
 BLOCK = 1024 * 1024
+SCAN_MAX_DEPTH = 6
+SCAN_MAX_DIRECTORIES = 256
+SCAN_MAX_ENTRIES = 25000
+SCAN_MAX_METADATA_BYTES = 1024 * 1024
+KNOWN_CONTAINERS = {"PPSA35169-Compressed", "PS5VR-1.0.0-PPSA99177", "PS4",
+                    "PS5SX2-vk-285-118", "PPSA31371-Compressed", "PPSA28997-Compressed"}
 
 
 def require(condition, message):
@@ -146,7 +152,8 @@ class Wfm:
         require(len(body) == expected_size, "Metadata length changed or read schema unsupported")
         value = json.loads(body.decode("utf-8-sig"))
         require(isinstance(value, dict) and isinstance(value.get("titleId"), str) and
-                isinstance(value.get("contentId"), str), "Unrecognized app metadata; collision state unknown")
+                value["titleId"].strip() and isinstance(value.get("contentId"), str) and
+                value["contentId"].strip(), "Unrecognized app metadata; collision state unknown")
         return value
 
     def absent(self, parent, name):
@@ -244,26 +251,111 @@ class Wfm:
         save()
 
 
+def collision_scan(client, root_entries, metadata):
+    """Directory discovery only; metadata is the only file content inspected.
+
+    Exact destination absence is a separate gate. Unrelated incomplete packaging
+    is an explicit coverage gap, not a conflict or proof of global ID absence.
+    Stop at app indicators; no archive unpacking or link traversal is permitted.
+    """
+    cache = {HOME: root_entries}
+    stats = dict(scope="selected-usb0-homebrew-live-directory-apps", directories=1,
+                 entries=len(root_entries), metadata_bytes=0, identified_apps=0,
+                 known_containers=0, ordinary_containers=0, excluded=[],
+                 global_reservation=False)
+
+    def exclude(path, reason, identity_known=False):
+        selected_name = path.rsplit("/", 1)[-1].casefold() == TITLE.casefold()
+        require(not selected_name or identity_known, "Selected app identity is unknown: " + path)
+        packaging = any(part in KNOWN_CONTAINERS or part.startswith(".orbit-bundle-")
+                        for part in path[len(HOME) + 1:].split("/"))
+        prefix = "Incomplete/excluded packaging coverage: " if packaging else "Excluded unrelated coverage: "
+        stats["excluded"].append(dict(path=path, reason=prefix + reason))
+
+    def names(entries):
+        folded = {name.casefold(): name for name in entries}
+        require(len(folded) == len(entries), "Ambiguous case-folded directory entries")
+        return folded
+
+    def listing(path):
+        require(path == HOME or path.startswith(HOME + "/"), "Collision scan escaped selected homebrew root")
+        require(path == HOME or len(path[len(HOME) + 1:].split("/")) <= SCAN_MAX_DEPTH,
+                "Collision scan depth exhausted; scope unknown")
+        if path not in cache:
+            require(stats["directories"] < SCAN_MAX_DIRECTORIES, "Collision directory budget exhausted; scope unknown")
+            try:
+                entries = client.listing(path)
+            except RuntimeError:
+                raise RuntimeError("Collision discovery listing unavailable; scope unknown: " + path) from None
+            stats["directories"] += 1
+            stats["entries"] += len(entries)
+            require(stats["entries"] <= SCAN_MAX_ENTRIES, "Collision entry budget exhausted; scope unknown")
+            cache[path] = entries
+        return cache[path]
+
+    def visit(path, depth):
+        require(depth <= SCAN_MAX_DEPTH, "Collision scan depth exhausted; scope unknown")
+        entries = listing(path)
+        folded = names(entries)
+        binary_name, system_name = folded.get("eboot.bin"), folded.get("sce_sys")
+        parameter_name, system = None, None
+        if system_name:
+            if entries[system_name]["type"] != "d":
+                exclude(path, "system-directory indicator is not a regular directory; no traversal")
+                return
+            system = listing(path + "/" + system_name)
+            parameter_name = names(system).get("param.json")
+        if binary_name or parameter_name:
+            if parameter_name is None or system[parameter_name]["type"] != "-":
+                exclude(path, "executable/app indicator has no readable regular metadata; not inspected or unpacked")
+                return
+            size = system[parameter_name].get("size")
+            require(type(size) is int and 0 < size <= 65536, "App metadata size outside supported bound")
+            stats["metadata_bytes"] += size
+            require(stats["metadata_bytes"] <= SCAN_MAX_METADATA_BYTES, "Collision metadata-byte budget exhausted; scope unknown")
+            try:
+                other = client.metadata(path + "/" + system_name + "/" + parameter_name, size)
+            except (RuntimeError, ValueError, KeyError, TypeError):
+                exclude(path, "metadata could not be read/qualified; identity excluded from successful-read scope")
+                return
+            require(other["titleId"].casefold() != TITLE.casefold() and
+                    other["contentId"].casefold() != metadata["contentId"].casefold(), "Title/content ID collision: " + path)
+            stats["identified_apps"] += 1
+            if binary_name is None or entries[binary_name]["type"] != "-":
+                exclude(path, "metadata identity read, but regular executable is absent; no payload inspection", identity_known=True)
+            return  # Do not inspect this app's assets, saves, archives or payloads.
+        basename = path.rsplit("/", 1)[-1]
+        require(basename.casefold() != TITLE.casefold(), "Selected nested app directory has unknown identity: " + path)
+        known = basename in KNOWN_CONTAINERS or basename.startswith(".orbit-bundle-")
+        stats["known_containers" if known else "ordinary_containers"] += 1
+        for name, row in entries.items():
+            if row["type"] == "l":
+                exclude(path + "/" + name, "link not traversed")
+            elif row["type"] == "d":
+                visit(path + "/" + name, depth + 1)
+
+    require(stats["entries"] <= SCAN_MAX_ENTRIES, "Collision root entry budget exhausted")
+    names(root_entries)
+    for name, row in root_entries.items():
+        if row["type"] == "l":
+            exclude(HOME + "/" + name, "homebrew link not traversed")
+        elif row["type"] == "d":
+            visit(HOME + "/" + name, 1)
+    return stats
+
+
 def preflight(client, metadata):
     usb = client.listing(USB)
     require(usb.get("homebrew", {}).get("type") == "d", "Existing USB homebrew anchor unavailable")
     apps = client.listing(HOME)
-    require(TITLE not in apps, "App destination exists; backup/update review required; no overwrite")
-    for name, row in apps.items():
-        require(row["type"] != "l", "Homebrew link identity unknown; collision check incomplete")
-        if row["type"] != "d":
-            continue
-        folder = HOME + "/" + name
-        children = client.listing(folder)
-        require(children.get("sce_sys", {}).get("type") == "d", "Existing app identity is unknown; collision check incomplete")
-        system = client.listing(folder + "/sce_sys")
-        parameter = system.get("param.json", {})
-        require(parameter.get("type") == "-", "Existing app metadata unreadable/missing; collision check incomplete")
-        other = client.metadata(folder + "/sce_sys/param.json", parameter["size"])
-        require(other["titleId"] != TITLE and other["contentId"] != metadata["contentId"], "Title/content ID collision")
+    require(not any(name.casefold() == TITLE.casefold() for name in apps),
+            "App destination exists; backup/update review required; no overwrite")
+    result = collision_scan(client, apps, metadata)
     if "third-birthday-data" in usb:
         require(usb["third-birthday-data"]["type"] == "d", "Owned ISO directory collides with a non-directory")
-        require("ULUS10567.iso" not in client.listing(DATA), "ISO destination exists; preserve it and review separately")
+        require(not any(name.casefold() == "ULUS10567.iso".casefold() for name in client.listing(DATA)),
+                "ISO destination exists; preserve it and review separately")
+    return result
 
 
 def verify_app_tree(client, rows, include_metadata):
@@ -292,7 +384,9 @@ def main():
     parser.add_argument("--iso-sha256")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--project-install-confirmed", action="store_true")
-    parser.add_argument("--all-games-closed-confirmed", action="store_true")
+    # Legacy invocation compatibility only; current human instruction does not
+    # require unrelated games to be closed. Never inspect/close/reboot them.
+    parser.add_argument("--all-games-closed-confirmed", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--receipt", type=Path, required=True)
     args = parser.parse_args()
     report = dict(state="local-preflight", execute=args.execute, files=[], app=APP, iso=ISO,
@@ -302,8 +396,7 @@ def main():
         args.receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     try:
         if args.execute:
-            require(args.project_install_confirmed and args.all_games_closed_confirmed,
-                    "Execute requires fresh explicit project-install and all-games-closed confirmation")
+            require(args.project_install_confirmed, "Execute requires fresh explicit project-install confirmation")
             require(args.endpoint and args.iso and args.iso_sha256, "Execute requires endpoint and reviewed owned ISO/hash")
         rows, metadata = local_candidate(args.manifest.resolve())
         iso = None
@@ -316,7 +409,7 @@ def main():
         report["manifest_sha256"] = digest(args.manifest)
         client = Wfm(args.endpoint, args.execute) if args.endpoint else None
         if client:
-            preflight(client, metadata)
+            report["collision_scan"] = preflight(client, metadata)
         report["state"] = "read-only-plan-remote-checked" if client else "read-only-plan-remote-unknown"
         save()
         if not args.execute:

@@ -25,6 +25,17 @@ discovery and boot remain pending. Earlier local candidates are preserved.
 See `PS5-INSTALL-PLAN.md` for Cinder's reviewed recoverable USB file-delivery
 sequence. Atomic whole-directory activation is not required or claimed.
 
+The owner authorized the fresh USB0 app/owned-ISO install through Cinder, then
+removed the blanket all-games-closed condition. No automatic launch, force-close
+or reboot is permitted. Transfer is held for Cinder's exact final private artwork
+selection and a fresh r4 package; existing art previews are not selected.
+
+Actual read-only preflight completed: exact app destination absent, 59 app
+identities read in the bounded selected-root scan, with one unrelated incomplete
+packaging container explicitly excluded. ShadowMount's 132-title snapshot has
+no matching title/content ID. This is local collision evidence with documented
+coverage limits, not a global ID reservation. No console writes have occurred.
+
 Actual static checks passed:
 
 - One verified preparation cohort compiled; source/image/module GP/base/entry
@@ -100,7 +111,8 @@ worker status before dispatching or editing owned files.
 
 Continue native provider/ABI work and finish reviewed USB transfer tooling,
 and obtain the human's actual boot/control/movie/combat evidence after an approved
-USB-only installation. Console writes require current authorization and fresh
-closed-game confirmation; no autonomous launch. Keep other project apps/saves
+USB-only installation. The owner authorized the fresh USB0 app/ISO install and
+removed the blanket closed-game gate through Cinder. Hold transfer for Cinder's
+selected artwork and refreshed package; no autonomous launch. Keep other project apps/saves
 untouched. Qwen remains blocked by the previously recorded normal-path tool
 rejection; no alternate invocation or policy change is permitted.

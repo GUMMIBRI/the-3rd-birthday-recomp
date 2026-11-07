@@ -111,5 +111,71 @@ changing the staged app files. This tests staging logic, not a console launch.
 Native save/write services remain explicitly disabled. Source preparation pins
 planned writable locations to the USB app subtree, but no hardware filesystem
 trace or console boot evidence was produced here. Manager-owned installation
-still requires a current title/path collision check, current owner authorization,
-fresh game-closed confirmation and actual native registration checks. No console action was performed by the staging task.
+still requires a current title/path collision check, current owner authorization
+and actual native registration checks. The owner explicitly allows this fresh
+PE3 installation without closing other games. In-use, denied or unknown results
+must fail the operation; never force-close a game, launch automatically or reboot.
+No console action was performed by the staging task.
+
+## Optional manager-selected private artwork receipt
+
+The manager can select Cinder's finalized artwork using an additional private
+receipt without changing the original `r3` placeholder candidate:
+
+```
+./scripts/package_ps5_app.ps1 -PlatformRoot <existing-public-platform-prefix> -ArtworkManifest <private-receipt.json>
+```
+
+Providing `-ArtworkManifest` changes the fresh default output to ignored
+`build/private-delivery-r4`. Output is constrained to that tree, and an existing
+candidate is never overwritten. Finalization of that selection also requires
+the same receipt argument. Without the argument, the original `r3` selection
+and reviewed placeholder checks remain unchanged.
+
+The approved receipt interface has top-level `schemaVersion: 1`,
+`applicationId: "PPSA77025"`, and a `files` array. Each file provides:
+
+| Field | Required contract |
+|---|---|
+| `source` | Absolute local file path inside the authorized `C:/.pe` workspace |
+| `target` | Exactly `sce_sys/icon0.png`, `sce_sys/pic0.dds`, or `sce_sys/pic1.dds` |
+| `sha256` | Exactly 64 hexadecimal digits, matching the selected source bytes |
+| `bytes` | Positive integer matching the source file length |
+| `format` | `PNG` for the icon, or `DDS` for either background |
+| `width`, `height` | Positive integers matching the selected header dimensions |
+| `fourCC` | Optional DDS expectation, compared exactly when supplied |
+| `dxgiFormat` | Optional DX10 DDS expectation, compared when supplied; rejected for legacy headers |
+
+Targets must be unique, and the receipt must include its icon. A private selection
+never silently falls back to the original placeholder. PNG validation retains the
+mandatory 512×512, 8-bit RGB, noninterlaced contract. DDS validation checks its magic,
+124-byte header, 32-byte pixel-format record, required structural flags and the
+receipt's dimensions. A DX10 format requires the extension record and a positive
+array size. Actual fourCC/DXGI fields are recorded, and supplied expectations are
+checked. No unspecified compression format, decoder support, native compatibility
+or full payload geometry is invented from those fields.
+
+This path copies exact selected bytes; it does not create, crop, reverse a glyph,
+resize, re-encode or edit artwork. Cinder owns the artwork composition and final
+visual selection. Only a finalized manager receipt should be supplied; pending
+previews are not substitutes for those inputs. The project lead must explicitly
+select the exact receipt before invoking packaging. The appearance of a delivery
+file, preview or Cinder candidate does not itself authorize staging, and the
+script does not watch or automatically consume such files.
+
+`ARTWORK-RECEIPT.json` is copied into the private output root **outside** the app,
+and the private package manifest binds the receipt hash, source files, selected
+dimensions and header metadata. It is rechecked during finalization. Private
+artwork and fingerprints are never copied into public documentation or source.
+The original placeholder's MIT notice is not reused for different artwork.
+No rights notice is invented or automatically copied from an arbitrary receipt
+path; a Cinder-supplied rights-notice file needs an explicit reviewed packaging
+selection before inclusion in the app.
+
+The extension was syntax-checked, its receipt/PNG/duplicate-target helpers were
+checked in memory using the existing public placeholder, and synthetic in-memory
+DDS headers exercised structural acceptance and dimension-mismatch rejection.
+No asset was changed or staged by those helper checks. No private artwork
+receipt or finalized Cinder asset was available to this task, so no `r4` candidate
+or private-art readiness claim was produced here. The manager must run the real
+receipt through the full staging and current post-SCE gates when it arrives.

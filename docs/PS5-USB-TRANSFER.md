@@ -3,8 +3,10 @@
 `scripts/install_ps5_usb.py` is a **fresh-install file-delivery tool**, not an
 installer/launcher registration proof. The source was syntax-parsed and the
 manager ran its endpoint-free local plan against the selected r3 manifest;
-local validation passed. No console connection or upload has occurred. Actual
-installed WFM compatibility remains untested.
+local validation passed. A later manager-run read-only preflight exposed the old
+assumption that every homebrew directory was an app. The bounded discovery fix
+below has offline fixture checks only; this worker made no console/network call
+and performed no upload. Complete installed-WFM compatibility remains unqualified.
 
 The only final destinations are:
 
@@ -20,8 +22,10 @@ available for recovery. Native game writes remain disabled.
 ## Cinder's delivery decision
 
 Cinder approved recoverable file delivery to a positively absent app directory
-after fresh project-install authorization and confirmation that all games are
-closed. Whole-folder atomic activation is not assumed. The tool uploads each
+after fresh project-install authorization. The latest direct human instruction
+removes the blanket all-games-closed requirement: do not stop unrelated games.
+In-use, denied and unknown responses stop delivery; no forced close or reboot is
+performed. Whole-folder atomic activation is not assumed. The tool uploads each
 file under a unique sibling `.part` name with `overwrite=0`, streams a complete
 remote readback for size/SHA256 verification, then uses the proven sibling rename
 API. Companion files, notices and icon precede EBOOT; the separate ISO is completed
@@ -32,9 +36,10 @@ and must be reviewed without automatic deletion.
 
 This is not atomic, race-free or evidence that a launcher registered the app.
 Sibling absent checks and `overwrite=0` uploads reduce accidental replacement,
-but the rename API has no proven exclusive no-replace transaction. The manager's
-exclusive closed-game delivery slot is required; concurrent external changes can
-still invalidate preflight. No unsupported safety property is inferred.
+but the rename API has no proven exclusive no-replace transaction. Coordinate the
+project's current delivery slot and actual same-app conflicts with the manager;
+concurrent external changes can still invalidate preflight. No unsupported safety
+property is inferred.
 
 The WFM frontend exposes `/api/move` with `paths`, `dst`, `overwrite`. Cinder's
 review of the [upstream server source](https://github.com/owendswang/ps5-web-file-manager/blob/main/src/filemgr.c)
@@ -67,12 +72,48 @@ exact staged file names/lengths/hashes and matching finalized EBOOT/metadata has
 The app root must match the manifest's sibling `PPSA77025` folder. Symlink inputs,
 ambiguous relative names and duplicate case-folded names are rejected.
 
-Remote preflight requires the existing USB/homebrew anchor, a positively absent
-`PPSA77025`, and readable `sce_sys/param.json` identities for all existing homebrew
-directories. A link, incomplete metadata or unsupported directory layout blocks
-the automatic collision decision; request Cinder's bounded review instead of
-skipping it. This scans the selected USB homebrew scope only and does not establish
-a catalog-wide title-ID reservation.
+Remote preflight requires the existing USB/homebrew anchor and a positively
+absent `PPSA77025`, including case-folded aliases. It discovers live app candidates
+through directory listings rather than declaring every folder an app:
+
+- A regular `eboot.bin` plus regular `sce_sys/param.json` identifies a candidate.
+  Successfully read metadata must not contain the selected title/content ID.
+  Metadata-only candidates are also checked for collisions before recording their
+  incomplete-executable coverage gap. Successfully read identity is not ignored
+  merely because its executable is absent.
+- Unrelated incomplete packaging, such as an eboot-only app inside a hidden
+  `.orbit-bundle-*`, is recorded in the receipt's `excluded` array with its path
+  and reason, then skipped without payload inspection or unpacking. Unreadable
+  or malformed metadata for an unrelated candidate is likewise an explicit
+  coverage gap, **not** an automatic conflict and **not** proof of absence.
+  Other candidate metadata continues to be checked.
+- An unknown candidate whose own basename is `PPSA77025`, including a nested
+  directory or case-folded alias, still blocks the operation. The exact final
+  destination must remain positively absent. Any successfully read title/content
+  collision still blocks, regardless of packaging completeness.
+- Once an app's metadata is validated, scanning stops at that app boundary. Its
+  asset, save, archive and payload trees are not traversed or read.
+- Known packaging containers (`PPSA35169-Compressed`, `PS5VR-1.0.0-PPSA99177`,
+  `PS4`, `PS5SX2-vk-285-118`, `PPSA31371-Compressed`, `PPSA28997-Compressed` and
+  `.orbit-bundle-*`) and other ordinary folders may contain nested live apps.
+  Only their directories are traversed. Ordinary assets, archives and empty
+  containers without app indicators are not automatically treated as conflicts.
+- No archive is unpacked and no executable/payload file content is read. Links
+  are never traversed. Unrelated links are recorded as excluded coverage; a link
+  bearing the selected app's basename still blocks as unknown selected evidence.
+- Limits are directory depth **6**, **256** listed directories, **25,000** listed
+  entries, **64 KiB** per metadata file and **1 MiB** total metadata bytes. Exceeding
+  a bound is unresolved scope, not evidence of absence. Listing/access errors
+  remain failures. Known apps do not consume an unbounded asset-tree scan.
+
+The private receipt records scan bounds/counts and explicit excluded paths/reasons.
+Cinder approved the narrower fresh-install decision: exact destination positively
+absent and no selected ID among successfully read app metadata. This is a **local
+selected-USB0 homebrew identity check**, not global absence, a reservation, or a
+claim about excluded/incomplete containers, unopened archives or other storage.
+Unreadable roots and exhausted scan budgets still stop for review. The latest
+offline fixtures checked excluded hidden incomplete packaging, selected unknown
+evidence and actual collisions; no network preflight was invoked by this worker.
 
 ## Explicit execution gate
 
@@ -80,13 +121,15 @@ Execution additionally requires all of:
 
 - `--execute`
 - `--project-install-confirmed`
-- `--all-games-closed-confirmed`
 - An externally supplied endpoint and fresh private receipt path.
 - `--iso <reviewed-owned-ISO>` and `--iso-sha256 <private-reviewed-hash>`.
 
 Those flags record the caller's **already obtained fresh human confirmation**;
 they do not obtain permission or check game processes themselves. Do not supply
-them from a stale authorization. The ISO must match the reviewed 1,467,547,648-byte
+them from a stale authorization. The old `--all-games-closed-confirmed` option is
+accepted only as an ignored compatibility flag; it is no longer an execution
+gate. Current manager/artwork review must still be complete before invocation.
+The ISO must match the reviewed 1,467,547,648-byte
 source and supplied hash. Its original copy remains untouched. An existing remote
 ISO is preserved and blocks this fresh-delivery tool, even if it may be identical.
 
