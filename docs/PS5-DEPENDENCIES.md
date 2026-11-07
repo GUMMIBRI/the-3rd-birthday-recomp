@@ -27,3 +27,11 @@ and maps it read/write without execute. It retains the 512 MiB aggregate bound.
 It does not emulate Windows commit growth. Actual game thread demand and console
 pool availability remain qualification work; allocation failure is a real error.
 
+
+Additional renderer dependencies: official nothings/stb revision
+`d14d46f6b44456eb88beac58cba833a4135d4c89` (MIT option; unmodified header notices
+and PROVENANCE.json retained); official Cyan4973/xxHash v0.8.3 revision
+`e626a72bc2321cd320e953a0ccf1584cad60f363` (BSD2 license and provenance retained).
+The unmodified SDL debug bitmap font keeps its Zlib notice and public-domain VGA
+font attribution; exact source content hash is recorded in PS5-REVIEW.md. No
+original game font atlas or private character/background assets were copied.

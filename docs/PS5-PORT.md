@@ -160,3 +160,43 @@ ISO lookup/read/EOF and failure cases. This is not original game progression.
 Next integration: retain the existing native Vulkan GE renderer using the actual
 PS5 SDL_Vulkan provider, connect checked dispatch, replace GDI text/PNG and mod
 filesystem APIs, then link these genuine rendering services with the host app.
+
+## Renderer and native game-service source batch
+
+The genuine Vulkan GE renderer and SDL presentation units now compile for PS5
+with checked global/instance/device dispatch. Native menus/toasts use a licensed
+SDL bitmap font and clipped CPU text raster uploaded through the real Vulkan
+path. Native PNG load/save uses pinned official stb headers under their MIT option;
+RGBA/BGRA round-trip and malformed/missing/dimension checks pass on the host.
+Native virtual input uses a single-producer/single-consumer C11 atomic queue.
+Overlay and screenshot buffers publish handles only after create/allocate/bind/map
+success; screenshot resize preserves the previous buffer if replacement fails.
+
+Portable texture discovery and PPSSPP pack hashing/priority now compile for PS5.
+Official xxHash v0.8.3 is pinned with its BSD2 license. Native texture dumping is
+explicitly unavailable until safe app-owned write services are bound; replacement
+textures remain implemented. Directory calls still need the reviewed native
+provider boundary; a compiling generic opendir is not console qualification.
+
+Native SDL audio output preserves the eight-channel 44.1 kHz mixing ring and
+blocking-call queue feedback. It compiles but is not yet linked/audible on PS5.
+The native GUI bridge preserves actual framebuffer presentation, controls,
+settings, save dialogs and interpolation hooks. HLE filesystem/timing and RTC/
+directory services have native source paths; synthetic calendar/directory checks
+are distinct from console evidence. No new emulator CPU loop or JIT is present.
+
+`tools/prepare_ps5_game.py` prepares a private cohort from the exact supported
+owned decrypted EBOOT: one relocated image, module GP, entry, translated C and
+source/input digests. `verify_ps5_prepared.py` and `compile_ps5_game.ps1` verify one
+cohort before and after compiling translated C. Native driver uses strong static
+image/profile/function symbols; it never loads a Windows DLL. Initial zero
+arguments and scheduler-allocated SP/k0 follow current upstream preparation.
+This pipeline has not run against game input here: the owner's US ISO/EBOOT path
+is pending. Only command-line parsing and source compilation are checked.
+
+`check_ps5_runtime.ps1` currently compiles 19 selected runtime translation units
+as one target batch. This does not yet link the game. Missing/binding work remains
+in native filesystem providers, save/media/OSK/mod integration, prepared-game
+input, full archive/provider linkage and final application auditing. The host
+application link/SELF milestone above remains a separate artifact. No deployment
+or gameplay occurred, and PS5 playable completion is not claimed.

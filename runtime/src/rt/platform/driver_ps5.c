@@ -1,0 +1,105 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ * Native application entry for ahead-of-time compiled game objects. This target
+ * never loads a Windows DLL, interprets CPU instructions or falls back to a JIT.
+ * Select instead of driver.c and game_glue.c; compile generated C WITHOUT
+ * SR_GAME_DLL. Unavailable translated game objects are a real link failure.
+ */
+#include "../recomp.h"
+#include "../iso.h"
+#include "host_dir.h"
+#include "game_profile.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+
+extern void sr_register_all(void); /* Strong symbol from locally generated C. */
+extern uint8_t *g_patch_flags;
+uint8_t sr_patch_on[64];
+
+static int usb_path(const char *path, int app) {
+    const char *p;
+    if (!path || strncmp(path, "/mnt/usb", 8)) return 0;
+    p = path + 8;
+    if (*p < '0' || *p > '9') return 0;
+    ++p; /* Existing console policy: one numeric USB mount component. */
+    if (*p++ != '/') return 0;
+    if (app) {
+        if (strncmp(p, "homebrew/", 9)) return 0;
+        p += 9;
+        if (!*p) return 0;
+    }
+    for (const char *component = p; *component;) {
+        const char *end = strchr(component, '/');
+        size_t length = end ? (size_t)(end - component) : strlen(component);
+        if (!length || (length == 1 && component[0] == '.') ||
+            (length == 2 && component[0] == '.' && component[1] == '.')) return 0;
+        for (size_t i = 0; i < length; ++i)
+            if ((unsigned char)component[i] < 32 || (unsigned char)component[i] == 127 || component[i] == '\\' || component[i] == ':') return 0;
+        if (!end) break;
+        if (app) return 0; /* Exactly one app folder under homebrew. */
+        component = end + 1;
+        if (!*component) return 0;
+    }
+    return 1;
+}
+int main(int argc, char **argv) {
+    /* Paths supplied by the eventual title launcher. No implicit data scan or
+     * mount-root creation; missing inputs are fatal rather than fake boot.
+     */
+    SrHostDir *anchor;
+    SrDirError error;
+    const uint32_t base = sr_native_game.base, entry = sr_native_game.entry;
+    char memstick[SR_DIR_PATH_CAPACITY], scratch[SR_DIR_PATH_CAPACITY], mods[SR_DIR_PATH_CAPACITY];
+    CpuState cpu;
+    if (argc != 3 || !usb_path(argv[1], 1) || !usb_path(argv[2], 0)) {
+        fprintf(stderr, "usage: native-game <existing /mnt/usbN/homebrew/app> <owned ISO path on USB>\n");
+        return 2;
+    }
+    if (base < 0x08000000u || base >= 0x0c000000u || entry < base || entry >= 0x0c000000u || (entry & 3u)) {
+        fprintf(stderr, "native game: invalid prepared image address range\n"); return 2;
+    }
+    if (sr_dir_open(argv[1], &anchor, &error) != 0) {
+        fprintf(stderr, "native game: app anchor unavailable: %d/%u\n", error.status, error.native_code); return 2;
+    }
+    if (sr_dir_close(anchor, &error) != 0 || chdir(argv[1]) != 0) {
+        fprintf(stderr, "native game: cannot select app-owned working directory\n"); return 2;
+    }
+    if (snprintf(memstick, sizeof(memstick), "%s/user/memstick", argv[1]) >= (int)sizeof(memstick) ||
+        snprintf(scratch, sizeof(scratch), "%s/user/fs", argv[1]) >= (int)sizeof(scratch) ||
+        snprintf(mods, sizeof(mods), "%s/user", argv[1]) >= (int)sizeof(mods)) {
+        fprintf(stderr, "native game: app-owned path exceeds limit\n"); return 2;
+    }
+    if (setenv("SR_MEMSTICK", memstick, 1) != 0 ||
+        setenv("SR_FSDIR", scratch, 1) != 0 ||
+        setenv("SR_MODDIR", mods, 1) != 0 ||
+        setenv("PSP_ISO", argv[2], 1) != 0 || iso_init() != 0) {
+        fprintf(stderr, "native game: original disc could not be opened\n"); return 2;
+    }
+    if (!sr_native_game.image || !sr_native_game.image_size ||
+        sr_native_game.image_size > 0x0c000000u - base ||
+        entry - base >= sr_native_game.image_size ||
+        (sr_native_game.module_gp && (sr_native_game.module_gp < 0x08000000u || sr_native_game.module_gp >= 0x0c000000u))) {
+        fprintf(stderr, "native game: invalid compiled image profile\n"); return 2;
+    }
+    sr_mem_init();
+    sr_load_segment(base, sr_native_game.image, sr_native_game.image_size);
+    sr_register_all();
+    if (!sr_lookup(entry)) { fprintf(stderr, "native game: missing translated entry 0x%08x\n", entry); return 2; }
+    g_patch_flags = sr_patch_on;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.vfpuCtrl[0] = cpu.vfpuCtrl[1] = 0xe4;
+    cpu.pc = entry;
+    cpu.r[28] = sr_native_game.module_gp;
+    /* Upstream preparation uses zero module arguments; scheduler allocates SP/k0. */
+    cpu.r[4] = cpu.r[5] = cpu.r[29] = cpu.r[26] = 0;
+    gui_init("The 3rd Birthday — native PS5 development");
+    if (!gui_on()) { fprintf(stderr, "native game: renderer initialization failed\n"); return 2; }
+    sr_hle_init();
+    sched_init(&cpu);
+    sched_run(entry, 0, 0);
+    fprintf(stderr, "native game: entry scheduler returned\n");
+    return 0;
+}

@@ -15,12 +15,28 @@
  * GPLv2+: it consumes ge.c, whose GE semantics are derived from PPSSPP. */
 
 #include "sdl3vk.h"
+#if defined(SR_VK_DISPATCH)
+#include "vk_dispatch.h"
+#define VK_AVAILABLE(name) ((name) != NULL)
+#else
+#define VK_AVAILABLE(name) 1
+#endif
+#ifndef _WIN32
+#include "portable_text.h"
+#endif
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>                        /* GDI text for the toast */
+#endif
+#include <stdatomic.h>
+#include "../platform/png.h"
+#include "../platform/host_dir.h"
+#include <sys/stat.h>
+#include <errno.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -334,18 +350,20 @@ static int      s_shot_req = 0;                      /* F12: save the next frame
 static SDL_Joystick *s_vjoy = NULL;                  /* SR_VPAD test pad */
 int sdl3vk_dual_src = 0;                             /* device has dualSrcBlend enabled */
 /* The SDL joystick API belongs to the main thread: ctrl_server.c queues, the event pump applies. */
-static volatile LONG s_vq_w, s_vq_r; static int s_vq[64][3];
+static _Atomic uint32_t s_vq_w, s_vq_r; static int s_vq[64][3];
 static void vq_push(int kind, int a, int b) {
-    LONG w = s_vq_w; if (w - s_vq_r >= 64) return;
+    uint32_t w = atomic_load_explicit(&s_vq_w, memory_order_relaxed);
+    if (w - atomic_load_explicit(&s_vq_r, memory_order_acquire) >= 64u) return;
     s_vq[w & 63][0] = kind; s_vq[w & 63][1] = a; s_vq[w & 63][2] = b;
-    InterlockedExchange(&s_vq_w, w + 1);
+    atomic_store_explicit(&s_vq_w, w + 1u, memory_order_release);
 }
 void sdl3vk_vpad_button(int button, int down) { vq_push(0, button, down); }
 void sdl3vk_vpad_axis(int axis, int value) { vq_push(1, axis, value); }
 void sdl3vk_vmouse_button(int button, int down) { vq_push(2, button, down); }   /* tests: a mouse click event */
 static void vq_apply(void) {
-    while (s_vq_r != s_vq_w) {
-        const int *q = s_vq[s_vq_r & 63];
+    uint32_t r = atomic_load_explicit(&s_vq_r, memory_order_relaxed);
+    while (r != atomic_load_explicit(&s_vq_w, memory_order_acquire)) {
+        const int *q = s_vq[r & 63];
         if (q[0] == 2) {
             SDL_Event e; SDL_zero(e);
             e.type = q[2] ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
@@ -357,13 +375,13 @@ static void vq_apply(void) {
             if (getenv("SR_KEYLOG")) fprintf(stderr, "vpad: %s %d = %d -> %s (pad=%p)%s\n", q[0] ? "axis" : "button", q[1], q[2],
                                              ok ? "ok" : SDL_GetError(), (void *)s_pad, s_pad ? "" : " NO GAMEPAD OPEN");
         }
-        InterlockedIncrement(&s_vq_r);
+        atomic_store_explicit(&s_vq_r, ++r, memory_order_release);
     }
 }
 static int      s_pad_present;
 
 #define VK_TRY(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
-    fprintf(stderr, "sdl3vk: %s failed: %d\n", #expr, (int)vr_); return 0; } } while (0)
+    fprintf(stderr, "sdl3vk: %s failed: %d\n", #expr, (int)vr_); SDL_SetError("sdl3vk: %s failed: %d", #expr, (int)vr_); return 0; } } while (0)
 
 static uint32_t find_mem_type(uint32_t bits, VkMemoryPropertyFlags want) {
     VkPhysicalDeviceMemoryProperties mp;
@@ -377,7 +395,7 @@ static uint32_t find_mem_type(uint32_t bits, VkMemoryPropertyFlags want) {
 /* ---- swapchain ---------------------------------------------------------------------- */
 
 static void destroy_swapchain(void) {
-    if (s_swap) { vkDestroySwapchainKHR(s_dev, s_swap, NULL); s_swap = VK_NULL_HANDLE; }
+    if (s_swap && VK_AVAILABLE(vkDestroySwapchainKHR)) { vkDestroySwapchainKHR(s_dev, s_swap, NULL); s_swap = VK_NULL_HANDLE; }
 }
 
 static int create_swapchain(void) {
@@ -464,23 +482,38 @@ void sdl3vk_toast(const char *msg, int ms) {
     s_toast_until = SDL_GetTicks() + (Uint64)(ms > 0 ? ms : 2500);
 }
 
+/* Publish mapped buffers only after create/allocate/bind/map all succeed. */
+static int mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                         VkBuffer *buffer, VkDeviceMemory *memory, void **mapping) {
+    VkBuffer b = VK_NULL_HANDLE;
+    VkDeviceMemory m = VK_NULL_HANDLE;
+    void *address = NULL;
+    VkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    info.size = size; info.usage = usage;
+    if (vkCreateBuffer(s_dev, &info, NULL, &b) != VK_SUCCESS) return 0;
+    VkMemoryRequirements requirements;
+    vkGetBufferMemoryRequirements(s_dev, b, &requirements);
+    VkMemoryAllocateInfo alloc = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    alloc.allocationSize = requirements.size;
+    alloc.memoryTypeIndex = find_mem_type(requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(s_dev, &alloc, NULL, &m) != VK_SUCCESS ||
+        vkBindBufferMemory(s_dev, b, m, 0) != VK_SUCCESS ||
+        vkMapMemory(s_dev, m, 0, VK_WHOLE_SIZE, 0, &address) != VK_SUCCESS) {
+        vkDestroyBuffer(s_dev, b, NULL);
+        if (m) vkFreeMemory(s_dev, m, NULL);
+        return 0;
+    }
+    *buffer = b; *memory = m; *mapping = address;
+    return 1;
+}
+
 /* Render a label's bitmap for a font of `px` pixels. Returns 0 if unavailable. */
 static int label_render(Label *L, int px, int accent) {
     if (!strcmp(L->drawn, L->msg) && L->px == px && L->w) return 1;
-    if (!L->buf) {
-        VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        bci.size = (VkDeviceSize)TOAST_MAX_W * TOAST_MAX_H * 4;
-        bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        if (vkCreateBuffer(s_dev, &bci, NULL, &L->buf) != VK_SUCCESS) return 0;
-        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, L->buf, &mr);
-        VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        mai.allocationSize = mr.size;
-        mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(s_dev, &mai, NULL, &L->mem) != VK_SUCCESS) return 0;
-        vkBindBufferMemory(s_dev, L->buf, L->mem, 0);
-        vkMapMemory(s_dev, L->mem, 0, VK_WHOLE_SIZE, 0, &L->map);
-    }
+    if (!L->buf && !mapped_buffer((VkDeviceSize)TOAST_MAX_W * TOAST_MAX_H * 4,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &L->buf, &L->mem, &L->map)) return 0;
+#ifdef _WIN32
     HDC dc = CreateCompatibleDC(NULL);
     HFONT font = CreateFontA(-px, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                              CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
@@ -515,6 +548,18 @@ static int label_render(Label *L, int px, int accent) {
     DeleteObject(font);
     DeleteDC(dc);
     if (!ok) return 0;
+#else
+    const int pad = px * 2 / 3, bar = accent ? (px / 5 > 2 ? px / 5 : 2) : 0;
+    int w = sr_text_width(L->msg, px, NULL, 0) + pad * 2 + bar;
+    int h = px + pad;
+    if (w > TOAST_MAX_W) w = TOAST_MAX_W;
+    if (h > TOAST_MAX_H) h = TOAST_MAX_H;
+    if (!L->map || w <= 0 || h <= 0) return 0;
+    sr_text_fill(L->map, w, h, w, 0, 0, w, h, 0xff141414u);
+    sr_text_fill(L->map, w, h, w, 0, 0, bar, h, 0xffe08a2eu);
+    sr_text_draw(L->map, w, h, w, bar + pad, pad / 2, L->msg, px,
+                 0xfff0f0f0u, NULL, 0);
+#endif
     L->w = w; L->h = h; L->px = px;
     SDL_strlcpy(L->drawn, L->msg, sizeof(L->drawn));
     return 1;
@@ -595,20 +640,9 @@ void sdl3vk_menu_show(const char *const *lines, int n, int sel) {
 
 static int menu_render(int px) {
     if (!s_menu_dirty && s_menu_px == px && s_menu_w) return 1;
-    if (!s_menu_buf) {
-        VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        bci.size = (VkDeviceSize)MENU_MAX_W * MENU_MAX_H * 4;
-        bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        if (vkCreateBuffer(s_dev, &bci, NULL, &s_menu_buf) != VK_SUCCESS) return 0;
-        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, s_menu_buf, &mr);
-        VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        mai.allocationSize = mr.size;
-        mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(s_dev, &mai, NULL, &s_menu_mem) != VK_SUCCESS) return 0;
-        vkBindBufferMemory(s_dev, s_menu_buf, s_menu_mem, 0);
-        vkMapMemory(s_dev, s_menu_mem, 0, VK_WHOLE_SIZE, 0, &s_menu_map);
-    }
+    if (!s_menu_buf && !mapped_buffer((VkDeviceSize)MENU_MAX_W * MENU_MAX_H * 4,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &s_menu_buf, &s_menu_mem, &s_menu_map)) return 0;
+#ifdef _WIN32
     HDC dc = CreateCompatibleDC(NULL);
     HFONT font = CreateFontA(-px, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                              CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
@@ -662,6 +696,30 @@ static int menu_render(int px) {
     DeleteObject(font); DeleteObject(bold);
     DeleteDC(dc);
     if (!ok) return 0;
+#else
+    const int pad = px, line_h = px * 8 / 5, bar = px / 4 > 3 ? px / 4 : 3;
+    const int tabs[3] = { px * 11, px * 18, px * 25 };
+    int w = 0;
+    for (int i = 0; i < s_menu_n; ++i) {
+        int measured = sr_text_width(s_menu_lines[i], i == 0 ? px * 6 / 5 : px, tabs, 3);
+        if (measured > w) w = measured;
+    }
+    w += pad * 3 + bar;
+    int h = pad * 2 + line_h * s_menu_n + line_h / 2;
+    if (w > MENU_MAX_W) w = MENU_MAX_W;
+    if (h > MENU_MAX_H) h = MENU_MAX_H;
+    if (!s_menu_map || w <= 0 || h <= 0) return 0;
+    sr_text_fill(s_menu_map, w, h, w, 0, 0, w, h, 0xff161616u);
+    sr_text_fill(s_menu_map, w, h, w, 0, 0, bar, h, 0xffe08a2eu);
+    for (int i = 0; i < s_menu_n; ++i) {
+        const int y = pad + i * line_h + (i > 0 ? line_h / 2 : 0);
+        if (i == s_menu_sel && i > 0)
+            sr_text_fill(s_menu_map, w, h, w, bar, y - px / 5, w - bar, line_h, 0xff402a18u);
+        const uint32_t color = i == 0 ? 0xfff0963cu : i == s_menu_sel ? 0xffffffffu : 0xffbebebeu;
+        sr_text_draw(s_menu_map, w, h, w, bar + pad, y, s_menu_lines[i],
+                     i == 0 ? px * 6 / 5 : px, color, tabs, 3);
+    }
+#endif
     s_menu_w = w; s_menu_h = h; s_menu_px = px; s_menu_dirty = 0;
     return 1;
 }
@@ -723,6 +781,7 @@ void sdl3vk_request_screenshot_named(const char *name) {
 /* ---- screenshots (F12) -------------------------------------------------------------------
  * The visible game image (at the internal resolution, without the menu or toasts) is copied to
  * a host buffer during the present and saved as PNG through GDI+ into screenshots/. */
+#ifdef _WIN32
 typedef struct { UINT32 GdiplusVersion; void *DebugEventCallback; BOOL SuppressBackgroundThread; BOOL SuppressExternalCodecs; } GpStartupIn;
 int __stdcall GdiplusStartup(ULONG_PTR *token, const GpStartupIn *input, void *output);
 int __stdcall GdipCreateBitmapFromScan0(INT w, INT h, INT stride, INT format, BYTE *scan0, void **bitmap);
@@ -784,26 +843,29 @@ uint32_t *sdl3vk_png_load(const char *path, int *w, int *h) {
     return out;
 }
 
+#else
+int sdl3vk_png_save(const char *path, const uint32_t *rgba, int w, int h) {
+    return sr_png_save(path, rgba, w, h, 0);
+}
+uint32_t *sdl3vk_png_load(const char *path, int *w, int *h) {
+    return sr_png_load(path, w, h);
+}
+#endif
+
 static VkBuffer s_shot_buf; static VkDeviceMemory s_shot_mem; static void *s_shot_map;
 static VkDeviceSize s_shot_cap = 0;
 static int s_shot_w = 0, s_shot_h = 0, s_shot_pending = 0;
 
 /* Record a copy of `src` (TRANSFER_SRC, w x h BGRA) into the screenshot buffer. */
 static void shot_record(VkImage src, int w, int h) {
+    if (w <= 0 || h <= 0 || w > 4096 || h > 4096) return;
     VkDeviceSize need = (VkDeviceSize)w * h * 4;
     if (need > s_shot_cap) {
-        if (s_shot_buf) { vkDestroyBuffer(s_dev, s_shot_buf, NULL); vkFreeMemory(s_dev, s_shot_mem, NULL); s_shot_buf = VK_NULL_HANDLE; }
-        VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        bci.size = need; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        if (vkCreateBuffer(s_dev, &bci, NULL, &s_shot_buf) != VK_SUCCESS) return;
-        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, s_shot_buf, &mr);
-        VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        mai.allocationSize = mr.size;
-        mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(s_dev, &mai, NULL, &s_shot_mem) != VK_SUCCESS) return;
-        vkBindBufferMemory(s_dev, s_shot_buf, s_shot_mem, 0);
-        vkMapMemory(s_dev, s_shot_mem, 0, VK_WHOLE_SIZE, 0, &s_shot_map);
+        VkBuffer buffer; VkDeviceMemory memory; void *mapping;
+        if (!mapped_buffer(need, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &buffer, &memory, &mapping)) return;
+        if (s_shot_buf) vkDestroyBuffer(s_dev, s_shot_buf, NULL);
+        if (s_shot_mem) vkFreeMemory(s_dev, s_shot_mem, NULL);
+        s_shot_buf = buffer; s_shot_mem = memory; s_shot_map = mapping;
         s_shot_cap = need;
     }
     VkBufferImageCopy c = {0};
@@ -815,6 +877,7 @@ static void shot_record(VkImage src, int w, int h) {
 }
 
 /* After the present's fence: write the PNG. */
+#ifdef _WIN32
 static void shot_save(void) {
     if (!s_shot_pending) return;
     s_shot_pending = 0;
@@ -853,6 +916,40 @@ static void shot_save(void) {
     fprintf(stderr, "screenshot: %s %ls\n", msg, name);
     if (!named) sdl3vk_toast(msg, 2000);
 }
+
+#else
+static void shot_save(void) {
+    if (!s_shot_pending) return;
+    s_shot_pending = 0;
+    char path[SR_DIR_PATH_CAPACITY], leaf[192];
+    const char *sd = getenv("SR_SHOTDIR");
+    const char *directory = sd && *sd ? sd : "screenshots";
+    const int named = (sd && s_shot_name[0]) || s_shot_path[0];
+    int path_ok = 1;
+    if (s_shot_path[0]) {
+        path_ok = snprintf(path, sizeof(path), "%s", s_shot_path) < (int)sizeof(path);
+        s_shot_path[0] = 0;
+    } else {
+        if (named) {
+            path_ok = snprintf(leaf, sizeof(leaf), "%s.png", s_shot_name) < (int)sizeof(leaf);
+            s_shot_name[0] = 0;
+        } else {
+            static unsigned serial;
+            snprintf(leaf, sizeof(leaf), "3rd_Birthday_%llu_%u.png", (unsigned long long)SDL_GetTicksNS(), serial++);
+        }
+        SrDirError error;
+        path_ok = path_ok && sr_dir_join(directory, leaf, path, sizeof(path), &error) == 0;
+        if (path_ok && mkdir(directory, 0770) != 0 && errno != EEXIST) path_ok = 0;
+    }
+    int ok = path_ok && sr_png_save(path, s_shot_map, s_shot_w, s_shot_h, 1);
+    char msg[160];
+    if (ok) snprintf(msg, sizeof(msg), "Screenshot saved (%dx%d)", s_shot_w, s_shot_h);
+    else snprintf(msg, sizeof(msg), "Screenshot failed");
+    fprintf(stderr, "screenshot: %s\n", msg);
+    if (!named) sdl3vk_toast(msg, 2000);
+}
+
+#endif
 
 /* ---- render scale ------------------------------------------------------------------ */
 
@@ -930,7 +1027,7 @@ int sdl3vk_render_scale(void) {
 
 /* ---- init --------------------------------------------------------------------------- */
 
-int sdl3vk_init(const char *title) {
+static int sdl3vk_init_inner(const char *title) {
     if (getenv("SR_VPAD")) SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");   /* tests drive an unfocused window */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
@@ -958,6 +1055,9 @@ int sdl3vk_init(const char *title) {
         SDL_SetWindowPosition(s_win, -4000, 200);
     }
 
+#if defined(SR_VK_DISPATCH)
+    if (!sr_vk_load_global()) return 0;
+#endif
     Uint32 next = 0;
     const char * const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&next);
     VkApplicationInfo ai = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
@@ -968,6 +1068,9 @@ int sdl3vk_init(const char *title) {
     ici.enabledExtensionCount = next;
     ici.ppEnabledExtensionNames = sdl_ext;
     VK_TRY(vkCreateInstance(&ici, NULL, &s_inst));
+#if defined(SR_VK_DISPATCH)
+    if (!sr_vk_load_instance(s_inst)) return 0;
+#endif
 
     if (!SDL_Vulkan_CreateSurface(s_win, s_inst, NULL, &s_surf)) {
         fprintf(stderr, "sdl3vk: SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
@@ -1002,7 +1105,10 @@ int sdl3vk_init(const char *title) {
             if (score > best) { best = score; s_pdev = devs[d]; s_qfam = (uint32_t)fam; }
         }
     }
-    if (!s_pdev) { fprintf(stderr, "sdl3vk: no usable Vulkan device\n"); return 0; }
+    if (!s_pdev) {
+        SDL_SetError("sdl3vk: no Vulkan device supports graphics and presentation to this surface");
+        fprintf(stderr, "%s\n", SDL_GetError()); return 0;
+    }
     {
         VkPhysicalDeviceProperties pp;
         vkGetPhysicalDeviceProperties(s_pdev, &pp);
@@ -1026,6 +1132,9 @@ int sdl3vk_init(const char *title) {
     dci.enabledExtensionCount = 1;
     dci.ppEnabledExtensionNames = dev_ext;
     VK_TRY(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
+#if defined(SR_VK_DISPATCH)
+    if (!sr_vk_load_device(s_dev)) return 0;
+#endif
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
 
     VkCommandPoolCreateInfo cpi = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
@@ -1113,6 +1222,14 @@ int sdl3vk_init(const char *title) {
     return 1;
 }
 
+int sdl3vk_init(const char *title) {
+    char error[512];
+    if (sdl3vk_init_inner(title)) return 1;
+    SDL_strlcpy(error, SDL_GetError(), sizeof(error));
+    sdl3vk_shutdown();
+    if (error[0]) SDL_SetError("%s", error);
+    return 0;
+}
 /* ---- input -------------------------------------------------------------------------- */
 
 static void poll_input(int *quit) {
@@ -1520,20 +1637,51 @@ int sdl3vk_present_image(void *vk_image) {
 }
 
 void sdl3vk_shutdown(void) {
-    if (s_dev) vkDeviceWaitIdle(s_dev);
+    if (s_dev && VK_AVAILABLE(vkDeviceWaitIdle)) vkDeviceWaitIdle(s_dev);
     destroy_swapchain();
-    if (s_fbimg)       vkDestroyImage(s_dev, s_fbimg, NULL);
-    if (s_fbimg_mem)   vkFreeMemory(s_dev, s_fbimg_mem, NULL);
-    if (s_staging)     vkDestroyBuffer(s_dev, s_staging, NULL);
-    if (s_staging_mem) vkFreeMemory(s_dev, s_staging_mem, NULL);
-    if (s_sem_acq)     vkDestroySemaphore(s_dev, s_sem_acq, NULL);
-    for (int i = 0; i < 8; i++) if (s_sem_done[i]) vkDestroySemaphore(s_dev, s_sem_done[i], NULL);
-    if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
-    if (s_pool)        vkDestroyCommandPool(s_dev, s_pool, NULL);
-    if (s_dev)         vkDestroyDevice(s_dev, NULL);
-    if (s_surf)        vkDestroySurfaceKHR(s_inst, s_surf, NULL);
-    if (s_inst)        vkDestroyInstance(s_inst, NULL);
-    if (s_pad)         SDL_CloseGamepad(s_pad);
-    if (s_win)         SDL_DestroyWindow(s_win);
+    if (s_dev) {
+#define RELEASE_BUFFER(buffer, memory) do { \
+    if ((buffer) && VK_AVAILABLE(vkDestroyBuffer)) vkDestroyBuffer(s_dev, (buffer), NULL); \
+    if ((memory) && VK_AVAILABLE(vkFreeMemory)) vkFreeMemory(s_dev, (memory), NULL); \
+    (buffer) = VK_NULL_HANDLE; (memory) = VK_NULL_HANDLE; \
+} while (0)
+#define RELEASE_IMAGE(image, memory) do { \
+    if ((image) && VK_AVAILABLE(vkDestroyImage)) vkDestroyImage(s_dev, (image), NULL); \
+    if ((memory) && VK_AVAILABLE(vkFreeMemory)) vkFreeMemory(s_dev, (memory), NULL); \
+    (image) = VK_NULL_HANDLE; (memory) = VK_NULL_HANDLE; \
+} while (0)
+        RELEASE_IMAGE(s_fbimg, s_fbimg_mem);
+        RELEASE_IMAGE(s_visimg, s_visimg_mem);
+        RELEASE_BUFFER(s_staging, s_staging_mem);
+        RELEASE_BUFFER(s_toast.buf, s_toast.mem);
+        RELEASE_BUFFER(s_fps.buf, s_fps.mem);
+        RELEASE_BUFFER(s_menu_buf, s_menu_mem);
+        RELEASE_BUFFER(s_shot_buf, s_shot_mem);
+#undef RELEASE_BUFFER
+#undef RELEASE_IMAGE
+        if (s_sem_acq && VK_AVAILABLE(vkDestroySemaphore)) vkDestroySemaphore(s_dev, s_sem_acq, NULL);
+        for (int i = 0; i < 8; ++i)
+            if (s_sem_done[i] && VK_AVAILABLE(vkDestroySemaphore)) vkDestroySemaphore(s_dev, s_sem_done[i], NULL);
+        if (s_fence && VK_AVAILABLE(vkDestroyFence)) vkDestroyFence(s_dev, s_fence, NULL);
+        if (s_pool && VK_AVAILABLE(vkDestroyCommandPool)) vkDestroyCommandPool(s_dev, s_pool, NULL);
+        if (VK_AVAILABLE(vkDestroyDevice)) vkDestroyDevice(s_dev, NULL);
+    }
+    if (s_surf && VK_AVAILABLE(vkDestroySurfaceKHR)) vkDestroySurfaceKHR(s_inst, s_surf, NULL);
+    if (s_inst && VK_AVAILABLE(vkDestroyInstance)) vkDestroyInstance(s_inst, NULL);
+    s_dev = VK_NULL_HANDLE; s_inst = VK_NULL_HANDLE; s_surf = VK_NULL_HANDLE;
+    s_pdev = VK_NULL_HANDLE; s_swap = VK_NULL_HANDLE;
+    s_sem_acq = VK_NULL_HANDLE; memset(s_sem_done, 0, sizeof(s_sem_done));
+    s_fence = VK_NULL_HANDLE; s_pool = VK_NULL_HANDLE;
+    s_staging_map = s_menu_map = s_shot_map = NULL;
+    memset(&s_toast, 0, sizeof(s_toast)); memset(&s_fps, 0, sizeof(s_fps));
+    s_menu_w = s_menu_h = s_menu_px = 0; s_menu_dirty = 1;
+    s_shot_cap = 0; s_shot_pending = 0;
+#if defined(SR_VK_DISPATCH)
+    sr_vk_reset();
+#endif
+    if (s_pad) SDL_CloseGamepad(s_pad);
+    if (s_vjoy) SDL_CloseJoystick(s_vjoy);
+    if (s_win) SDL_DestroyWindow(s_win);
+    s_pad = NULL; s_vjoy = NULL; s_win = NULL;
     SDL_Quit();
 }

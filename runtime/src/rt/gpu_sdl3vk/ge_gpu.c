@@ -43,9 +43,14 @@
 #include "../recomp.h"
 #include "../ge_shared.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>   /* texture packs: FindFirstFileA, CreateDirectoryA */
-#include <vulkan/vulkan.h>
+#include "vk_dispatch.h"
+#include "../platform/host_dir.h"
+#include <SDL3/SDL.h>
+#include <sys/stat.h>
+#include <errno.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -367,8 +372,9 @@ static void pass_barrier(VkCommandBuffer cmd) {
 static uint64_t s_t_wait, s_t_texdec, s_t_readback, s_t_upload;
 static unsigned long s_n_wait;
 static uint64_t now_us(void) {
-    struct timespec ts; timespec_get(&ts, TIME_UTC);
-    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)(ts.tv_nsec / 1000);
+    const Uint64 ticks = SDL_GetPerformanceCounter();
+    const Uint64 frequency = SDL_GetPerformanceFrequency();
+    return (ticks / frequency) * 1000000u + (ticks % frequency) * 1000000u / frequency;
 }
 
 /* Command buffers. Work is submitted without waiting: the single queue executes submissions
@@ -1051,7 +1057,7 @@ static int clut_row_get(void) {
 static int       s_tp_init = 0, s_tp_dump = 0, s_tp_n = 0;
 static uint64_t *s_tp_have = NULL;          /* sorted hashes of textures/*.png */
 static uint64_t  s_tp_dumped[8192]; static int s_tp_ndumped = 0;
-static char s_tp_dir[MAX_PATH];             /* <SR_MODDIR or .>/textures */
+static char s_tp_dir[SR_DIR_PATH_CAPACITY];  /* <SR_MODDIR or .>/textures */
 static int u64cmp(const void *a, const void *b) {
     const uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
     return x < y ? -1 : x > y;
@@ -1064,27 +1070,60 @@ static void tp_init(void) {
     s_tp_init = 1;
     const char *e = getenv("SR_TEXDUMP");
     s_tp_dump = e ? atoi(e) != 0 : sdl3vk_cfg_get("texture_dump", 0) != 0;
+#ifndef _WIN32
+    /* Console writes need the validated app anchor/exclusive-create service.
+     * Texture replacement remains available; never silently write via a link.
+     */
+    if (s_tp_dump) fprintf(stderr, "texture dump: unavailable until native app-owned storage is connected\n");
+    s_tp_dump = 0;
+#endif
     const char *md = getenv("SR_MODDIR");   /* test runs keep the player's folder clean */
-    snprintf(s_tp_dir, sizeof(s_tp_dir), "%s/textures", md && *md ? md : ".");
-    char pat[MAX_PATH + 16];
+    if (snprintf(s_tp_dir, sizeof(s_tp_dir), "%s/textures", md && *md ? md : ".") >= (int)sizeof(s_tp_dir)) {
+        s_tp_dump = 0; s_tp_dir[0] = 0;
+        fprintf(stderr, "texture pack: root path too long\n"); return;
+    }
+    char pat[SR_DIR_PATH_CAPACITY + 16];
     if (s_tp_dump) {
-        CreateDirectoryA(s_tp_dir, NULL);
-        snprintf(pat, sizeof(pat), "%s/dump", s_tp_dir); CreateDirectoryA(pat, NULL);
+#ifdef _WIN32
+        _mkdir(s_tp_dir);
+        snprintf(pat, sizeof(pat), "%s/dump", s_tp_dir); _mkdir(pat);
+#else
+        if (mkdir(s_tp_dir, 0770) != 0 && errno != EEXIST) {
+            fprintf(stderr, "texture dump: cannot create texture directory: %d\n", errno); s_tp_dump = 0;
+        }
+        snprintf(pat, sizeof(pat), "%s/dump", s_tp_dir);
+        if (s_tp_dump && mkdir(pat, 0770) != 0 && errno != EEXIST) {
+            fprintf(stderr, "texture dump: cannot create dump directory: %d\n", errno); s_tp_dump = 0;
+        }
+#endif
     }
     if (!sdl3vk_cfg_get("texture_packs", 1)) return;   /* launcher / graphics.cfg: packs off */
     s_ppx_n = ppx_init(s_tp_dir);
-    WIN32_FIND_DATAA fd;
-    snprintf(pat, sizeof(pat), "%s/*.png", s_tp_dir);
-    HANDLE h = FindFirstFileA(pat, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
+    SrHostDir *directory = NULL;
+    SrDirError error;
+    SrDirEntry entry;
+    if (sr_dir_open(s_tp_dir, &directory, &error) != 0) {
+        if (error.status != SR_DIR_MISSING)
+            fprintf(stderr, "texture pack: directory open failed: %d/%u\n", error.status, error.native_code);
+        return;
+    }
     int cap = 0;
-    do {
+    int status;
+    while ((status = sr_dir_next(directory, &entry, &error)) > 0) {
+        if (entry.kind != SR_DIR_REGULAR) continue;
         unsigned long long v; char tail[8];
-        if (sscanf(fd.cFileName, "%16llx%7s", &v, tail) != 2 || _stricmp(tail, ".png")) continue;
-        if (s_tp_n == cap) { cap = cap ? cap * 2 : 256; s_tp_have = realloc(s_tp_have, (size_t)cap * sizeof(uint64_t)); }
+        if (sscanf(entry.name, "%16llx%7s", &v, tail) != 2 || SDL_strcasecmp(tail, ".png")) continue;
+        if (s_tp_n == cap) {
+            int next_cap = cap ? cap * 2 : 256;
+            if (cap >= 1048576) { fprintf(stderr, "texture pack: entry limit exceeded\n"); break; }
+            uint64_t *next = realloc(s_tp_have, (size_t)next_cap * sizeof(uint64_t));
+            if (!next) { fprintf(stderr, "texture pack: allocation failed\n"); break; }
+            s_tp_have = next; cap = next_cap;
+        }
         s_tp_have[s_tp_n++] = v;
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+    }
+    if (status < 0) fprintf(stderr, "texture pack: enumeration failed: %d/%u\n", error.status, error.native_code);
+    if (sr_dir_close(directory, &error) != 0) fprintf(stderr, "texture pack: close failed: %d/%u\n", error.status, error.native_code);
     qsort(s_tp_have, (size_t)s_tp_n, sizeof(uint64_t), u64cmp);
     fprintf(stderr, "texture pack: %d replacement textures in textures/\n", s_tp_n);
 }
@@ -1099,14 +1138,15 @@ static uint32_t *tp_replace(const uint32_t *px, int w, int h, int *rw, int *rh) 
     uint64_t th = 1469598103934665603ull;
     th = fnv64(th, &w, sizeof(w)); th = fnv64(th, &h, sizeof(h));
     th = fnv64(th, px, (size_t)w * (size_t)h * 4);
-    char path[MAX_PATH + 40];
+    char path[SR_DIR_PATH_CAPACITY + 40];
     if (s_tp_dump) {
         int seen = 0;
         for (int i = 0; i < s_tp_ndumped; i++) if (s_tp_dumped[i] == th) { seen = 1; break; }
         if (!seen && s_tp_ndumped < 8192) {
             s_tp_dumped[s_tp_ndumped++] = th;
             snprintf(path, sizeof(path), "%s/dump/%016llx.png", s_tp_dir, (unsigned long long)th);
-            if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) sdl3vk_png_save(path, px, w, h);
+            struct stat info;
+            if (stat(path, &info) != 0 && errno == ENOENT) sdl3vk_png_save(path, px, w, h);
         }
     }
     if (!s_tp_n || !bsearch(&th, s_tp_have, (size_t)s_tp_n, sizeof(uint64_t), u64cmp)) return NULL;
@@ -2278,7 +2318,7 @@ int gegpu_present_interp(void *img) {
     {   /* SR_SLOWINTERP=<ms>: every in-between frame costs this much more (a slow GPU, for tests) */
         static int ms = -1;
         if (ms < 0) { const char *e = getenv("SR_SLOWINTERP"); ms = e ? atoi(e) : 0; }
-        if (ms > 0) Sleep((DWORD)ms);
+        if (ms > 0) SDL_Delay((Uint32)ms);
     }
     return sdl3vk_present_image(img);
 }

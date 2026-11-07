@@ -15,11 +15,14 @@
 
 #include "../recomp.h"
 #include "../ge_shared.h"
+#include "../platform/host_dir.h"
+#include <SDL3/SDL_stdinc.h>
 
 #define XXH_INLINE_ALL
-#include <xxhash.h>
+#include "../../../third_party/xxhash/xxhash.h"
 #include <emmintrin.h>
-#include <windows.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +37,71 @@ static Reduce s_reduce[256]; static int s_nreduce;
 static int s_hash_kind;                  /* 0 quick, 1 xxh32, 2 xxh64 */
 static int s_ignore_addr, s_reduce_on;
 static float s_reduce_global = 0.5f;
-static char s_dir[MAX_PATH];             /* the folder textures.ini is in */
+static char s_dir[SR_DIR_PATH_CAPACITY]; /* the folder textures.ini is in */
+
+static void pack_error(const char *action, const char *path, const SrDirError *error) {
+    fprintf(stderr, "texture pack: %s %s (status %d, native %u)\n", action, path,
+            (int)error->status, (unsigned)error->native_code);
+}
+
+/* Inspect one leaf without following links. Missing is distinct from denied or
+ * unreadable; an optional absent image may fall back, a broken pack is logged. */
+static int pack_leaf(const char *parent, const char *leaf, SrDirKind *kind) {
+    SrHostDir *dir = NULL;
+    SrDirError error;
+    SrDirEntry entry;
+    int status = sr_dir_open(parent, &dir, &error);
+    if (status != SR_DIR_OK) {
+        if (status != SR_DIR_MISSING) pack_error("cannot inspect", parent, &error);
+        return status;
+    }
+    int found = 0;
+    while ((status = sr_dir_next(dir, &entry, &error)) == 1) {
+#ifdef _WIN32
+        const int equal = SDL_strcasecmp(entry.name, leaf) == 0;
+#else
+        const int equal = strcmp(entry.name, leaf) == 0;
+#endif
+        if (equal) { *kind = entry.kind; found = 1; break; }
+    }
+    if (status < 0) pack_error("cannot enumerate", parent, &error);
+    SrDirError close_error;
+    if (sr_dir_close(dir, &close_error) != SR_DIR_OK) {
+        pack_error("cannot close", parent, &close_error);
+        return close_error.status;
+    }
+    return status < 0 ? status : found ? SR_DIR_OK : SR_DIR_MISSING;
+}
+
+/* Nested PNG names are legitimate. Resolve bounded individual components, not
+ * a truncated printf or a substring '..' check. Each component must have the
+ * expected non-link type. This is init-time validation, not a race-free sandbox. */
+static int pack_path(const char *relative, char *out, int inspect) {
+    char parent[SR_DIR_PATH_CAPACITY];
+    const char *p = relative;
+    if (!p || !*p || strlen(s_dir) >= sizeof(parent)) return 0;
+    memcpy(parent, s_dir, strlen(s_dir) + 1);
+    for (;;) {
+        const char *end = p;
+        char leaf[SR_DIR_NAME_CAPACITY], next[SR_DIR_PATH_CAPACITY];
+        while (*end && *end != '/' && *end != '\\') ++end;
+        const size_t length = (size_t)(end - p);
+        if (!length || length >= sizeof(leaf)) return 0;
+        memcpy(leaf, p, length); leaf[length] = 0;
+        SrDirError error;
+        if (sr_dir_join(parent, leaf, next, sizeof(next), &error) != SR_DIR_OK) return 0;
+        if (inspect) {
+            SrDirKind kind;
+            if (pack_leaf(parent, leaf, &kind) != SR_DIR_OK ||
+                    kind != (*end ? SR_DIR_DIRECTORY : SR_DIR_REGULAR)) return 0;
+        }
+        memcpy(parent, next, strlen(next) + 1);
+        if (!*end) break;
+        p = end + 1;
+    }
+    memcpy(out, parent, strlen(parent) + 1);
+    return 1;
+}
 
 static const uint8_t k_bpp[16] = { 16, 16, 16, 32, 4, 8, 16, 32, 4, 8, 8 };
 static const uint32_t k_align[16] = {
@@ -76,14 +143,27 @@ static uint32_t data_hash(const void *p, uint32_t n) {
     }
 }
 
-static void add(uint64_t ck, uint32_t h, int prio, const char *file) {
-    if (s_n == s_cap) { s_cap = s_cap ? s_cap * 2 : 1024; s_ent = realloc(s_ent, (size_t)s_cap * sizeof(Ent)); }
+static void add(uint64_t ck, uint32_t h, int prio, const char *file, int inspect) {
     char *f = NULL;
     if (file && *file) {
         size_t n = strcspn(file, "|");                /* mip levels "a.png|b.png": level 0 */
-        f = malloc(n + 1); memcpy(f, file, n); f[n] = 0;
+        if (!n || n >= SR_DIR_PATH_CAPACITY) return;
+        f = malloc(n + 1);
+        if (!f) { fprintf(stderr, "texture pack: filename allocation failed\n"); return; }
+        memcpy(f, file, n); f[n] = 0;
         for (char *c = f; *c; c++) if (*c == '\\') *c = '/';
-        if (strstr(f, "..")) { free(f); return; }      /* stay inside the pack */
+        char path[SR_DIR_PATH_CAPACITY];
+        if (!pack_path(f, path, inspect)) {
+            fprintf(stderr, "texture pack: skipped unavailable or unsafe image %s\n", f);
+            free(f); return;
+        }
+    }
+    if (s_n == s_cap) {
+        if (s_cap > INT_MAX / 2) { free(f); return; }
+        int cap = s_cap ? s_cap * 2 : 1024;
+        Ent *grown = realloc(s_ent, (size_t)cap * sizeof(Ent));
+        if (!grown) { fprintf(stderr, "texture pack: entry allocation failed\n"); free(f); return; }
+        s_ent = grown; s_cap = cap;
     }
     s_ent[s_n++] = (Ent){ ck, h, prio, f };
 }
@@ -133,68 +213,125 @@ static void trim(char *t) {
     memmove(t, a, strlen(a) + 1);
     size_t n = strlen(t); while (n && (t[n - 1] == ' ' || t[n - 1] == '\t' || t[n - 1] == '\r' || t[n - 1] == '\n')) t[--n] = 0;
 }
-static int truthy(const char *v) { return !_stricmp(v, "true") || !strcmp(v, "1") || !_stricmp(v, "yes"); }
+static int truthy(const char *v) { return !SDL_strcasecmp(v, "true") || !strcmp(v, "1") || !SDL_strcasecmp(v, "yes"); }
 
 static int load_ini(const char *path) {
     FILE *f = fopen(path, "r");
-    if (!f) return 0;
+    if (!f) {
+        fprintf(stderr, "texture pack: cannot read manifest %s (errno %d)\n", path, errno);
+        return 0;
+    }
     char line[1024], sec[64] = "";
+    int malformed = 0;
     while (fgets(line, sizeof(line), f)) {
+        /* Reject a split manifest record rather than using a truncated filename. */
+        if (!strchr(line, '\n') && !feof(f)) {
+            int next = fgetc(f);
+            if (next != EOF) {
+                fprintf(stderr, "texture pack: overlong manifest line in %s\n", path);
+                malformed = 1; break;
+            }
+        }
         trim(line);
         if (!line[0] || line[0] == ';' || line[0] == '#') continue;
         if (line[0] == '[') { char *e = strchr(line, ']'); if (e) *e = 0; snprintf(sec, sizeof(sec), "%s", line + 1); continue; }
         char *eq = strchr(line, '='); if (!eq) continue;
         *eq = 0; char *k = line, *v = eq + 1; trim(k); trim(v);
-        if (!_stricmp(sec, "options")) {
-            if (!_stricmp(k, "hash")) s_hash_kind = !_stricmp(v, "xxh32") ? 1 : !_stricmp(v, "xxh64") ? 2 : 0;
-            else if (!_stricmp(k, "ignoreAddress")) s_ignore_addr = truthy(v);
-            else if (!_stricmp(k, "reduceHash")) s_reduce_on = truthy(v);
-        } else if (!_stricmp(sec, "hashes")) {
+        if (!SDL_strcasecmp(sec, "options")) {
+            if (!SDL_strcasecmp(k, "hash")) s_hash_kind = !SDL_strcasecmp(v, "xxh32") ? 1 : !SDL_strcasecmp(v, "xxh64") ? 2 : 0;
+            else if (!SDL_strcasecmp(k, "ignoreAddress")) s_ignore_addr = truthy(v);
+            else if (!SDL_strcasecmp(k, "reduceHash")) s_reduce_on = truthy(v);
+        } else if (!SDL_strcasecmp(sec, "hashes")) {
             unsigned long long ck = 0; unsigned h = 0; int level = 0;
-            if (sscanf(k, "%16llx%8x_%d", &ck, &h, &level) >= 1 && level == 0) add(ck, h, 1, v);
-        } else if (!_stricmp(sec, "hashranges") && s_nrange < 256) {
+            if (sscanf(k, "%16llx%8x_%d", &ck, &h, &level) >= 1 && level == 0) add(ck, h, 1, v, 1);
+        } else if (!SDL_strcasecmp(sec, "hashranges") && s_nrange < 256) {
             unsigned a, fw, fh, tw, th;
             if (sscanf(k, "%x,%u,%u", &a, &fw, &fh) == 3 && sscanf(v, "%u,%u", &tw, &th) == 2 && tw && th && tw <= fw && th <= fh)
                 s_range[s_nrange++] = (Range){ ((uint64_t)a << 32) | ((uint64_t)fw << 16) | fh, (int)tw, (int)th };
-        } else if (!_stricmp(sec, "reducehashranges") && s_nreduce < 256) {
+        } else if (!SDL_strcasecmp(sec, "reducehashranges") && s_nreduce < 256) {
             unsigned fw, fh; float rv;
             if (sscanf(k, "%u,%u", &fw, &fh) == 2 && sscanf(v, "%f", &rv) == 1 && rv != 0.0f)
                 s_reduce[s_nreduce++] = (Reduce){ ((uint64_t)fw << 16) | fh, rv };
         }
     }
-    fclose(f);
+    const int read_error = ferror(f);
+    const int close_error = fclose(f);
+    if (malformed || read_error || close_error) {
+        fprintf(stderr, "texture pack: manifest I/O failed %s\n", path);
+        return 0;
+    }
     /* PPSSPP turns these off for the quick hash */
     if (s_hash_kind == 0) s_reduce_on = s_ignore_addr = 0;
     return 1;
 }
-static void scan_root(void) {   /* hash-named files in the pack's root: <16 hex><8 hex>[_level].png */
-    char pat[MAX_PATH + 8]; snprintf(pat, sizeof(pat), "%s/*.png", s_dir);
-    WIN32_FIND_DATAA fd; HANDLE hf = FindFirstFileA(pat, &fd);
-    if (hf == INVALID_HANDLE_VALUE) return;
-    do {
-        const size_t n = strlen(fd.cFileName) - 4;
-        if (n != 24 && !((n == 26 || n == 27) && fd.cFileName[24] == '_')) continue;
+static int scan_root(int *ini, char *ini_path) { /* typed manifest and hash-named PNGs */
+    SrHostDir *dir = NULL;
+    SrDirError error;
+    SrDirEntry entry;
+    *ini = 0;
+    int status = sr_dir_open(s_dir, &dir, &error);
+    if (status != SR_DIR_OK) {
+        if (status != SR_DIR_MISSING) pack_error("cannot open", s_dir, &error);
+        return status;
+    }
+    while ((status = sr_dir_next(dir, &entry, &error)) == 1) {
+        if (!SDL_strcasecmp(entry.name, "textures.ini") && entry.kind != SR_DIR_REGULAR) {
+            error.status = SR_DIR_UNSUPPORTED; error.native_code = 0;
+            status = SR_DIR_UNSUPPORTED; break;
+        }
+        if (entry.kind != SR_DIR_REGULAR) continue;
+        if (!SDL_strcasecmp(entry.name, "textures.ini")) {
+            *ini = 1; memcpy(ini_path, entry.path, strlen(entry.path) + 1); continue;
+        }
+        const size_t length = strlen(entry.name);
+        if (length < 4 || SDL_strcasecmp(entry.name + length - 4, ".png")) continue;
+        const size_t n = length - 4;
+        if (n != 24 && !((n == 26 || n == 27) && entry.name[24] == '_')) continue;
         unsigned long long ck = 0; unsigned h = 0; int level = 0;
-        if (sscanf(fd.cFileName, "%16llx%8x_%d", &ck, &h, &level) >= 1 && level == 0) add(ck, h, 0, fd.cFileName);
-    } while (FindNextFileA(hf, &fd));
-    FindClose(hf);
+        /* Enumeration already established regular-file type: do not re-enumerate
+         * the entire directory per root image (quadratic for large HD packs). */
+        if (sscanf(entry.name, "%16llx%8x_%d", &ck, &h, &level) >= 1 && level == 0) add(ck, h, 0, entry.name, 0);
+    }
+    if (status < 0) pack_error("cannot enumerate", s_dir, &error);
+    SrDirError close_error;
+    if (sr_dir_close(dir, &close_error) != SR_DIR_OK) {
+        pack_error("cannot close", s_dir, &close_error);
+        return close_error.status;
+    }
+    return status;
+}
+
+static void reset_pack(void) {
+    for (int i = 0; i < s_n; ++i) free(s_ent[i].file);
+    free(s_ent); s_ent = NULL; s_n = s_cap = 0;
+    free(s_noaddr); s_noaddr = NULL; s_nnoaddr = 0;
+    s_nrange = s_nreduce = s_hash_kind = s_ignore_addr = s_reduce_on = 0;
+    s_reduce_global = 0.5f;
 }
 
 /* Look for a PPSSPP pack in texdir or texdir/ULUS10567: a textures.ini, or (like PPSSPP without
  * one: quick hash) hash-named images, e.g. PPSSPP's own "Save new textures" output.
  * Returns the number of entries. */
 int ppx_init(const char *texdir) {
-    char p[MAX_PATH + 32];
-    const char *subs[] = { "", "/ULUS10567", "/ULUS10567/new" };
+    char p[SR_DIR_PATH_CAPACITY];
+    char game_dir[SR_DIR_PATH_CAPACITY], new_dir[SR_DIR_PATH_CAPACITY];
+    SrDirError error;
+    reset_pack();
+    s_dir[0] = 0;
+    if (!texdir || strlen(texdir) >= sizeof(s_dir) ||
+            sr_dir_join(texdir, "ULUS10567", game_dir, sizeof(game_dir), &error) != SR_DIR_OK ||
+            sr_dir_join(game_dir, "new", new_dir, sizeof(new_dir), &error) != SR_DIR_OK) return 0;
+    const char *subs[] = { texdir, game_dir, new_dir };
     for (int i = 0; i < 3; i++) {
-        snprintf(s_dir, sizeof(s_dir), "%s%s", texdir, subs[i]);
-        snprintf(p, sizeof(p), "%s/textures.ini", s_dir);
-        const int ini = GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
-        scan_root();
-        if (ini) load_ini(p);
-        if (!s_n) continue;
+        memcpy(s_dir, subs[i], strlen(subs[i]) + 1);
+        int ini = 0;
+        int status = scan_root(&ini, p);
+        if (status == SR_DIR_MISSING) continue;
+        if (status < 0 || (ini && !load_ini(p))) { reset_pack(); s_dir[0] = 0; return 0; }
+        if (!s_n) { reset_pack(); continue; }
         qsort(s_ent, (size_t)s_n, sizeof(Ent), ent_cmp);
         s_noaddr = malloc((size_t)s_n * sizeof(int)); s_nnoaddr = 0;
+        if (!s_noaddr) { reset_pack(); s_dir[0] = 0; return 0; }
         for (int k = 0; k < s_n; k++) if (s_ent[k].h && (s_ent[k].ck >> 32)) s_noaddr[s_nnoaddr++] = k;
         qsort(s_noaddr, (size_t)s_nnoaddr, sizeof(int), noaddr_cmp);
         fprintf(stderr, "texture pack: PPSSPP pack in %s (%d entries, hash %s%s%s)\n", s_dir, s_n,
@@ -270,8 +407,8 @@ const char *ppx_lookup(const GeState *ge) {
         }
         if (!e) continue;
         if (!e->file) return NULL;                     /* marked "don't replace" */
-        static char path[MAX_PATH * 2];
-        snprintf(path, sizeof(path), "%s/%s", s_dir, e->file);
+        static char path[SR_DIR_PATH_CAPACITY];
+        if (!pack_path(e->file, path, 0)) return NULL;
         static int nlog = 0;
         static int all = -1; if (all < 0) all = getenv("SR_PPXLOG") != NULL;
         if (all || nlog++ < 50) fprintf(stderr, "texture pack: %016llx%08x -> %s\n", (unsigned long long)ck, hash, e->file);

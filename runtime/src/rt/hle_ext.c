@@ -11,7 +11,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <time.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include "platform/host_dir.h"
+#endif
 
 #define A0 (s->r[4])
 #define A1 (s->r[5])
@@ -244,6 +251,7 @@ static uint32_t h_Memcpy(CpuState *s) {
 
 /* ---- Time / power ---- */
 
+#ifdef _WIN32
 static uint64_t rtc_tick_now(void) {
     /* Microseconds since 0001-01-01, the PSP RTC epoch. FILETIME counts 100 ns since 1601. */
     FILETIME ft; GetSystemTimeAsFileTime(&ft);
@@ -274,6 +282,71 @@ static uint32_t h_RtcSetTick(CpuState *s) {
     MEM_W32(dt + 12, (uint32_t)(tick % 1000000));
     return 0;
 }
+
+#else
+/* Year-1 Gregorian epoch, in microseconds; UTC only, never local timezone. */
+#define RTC_UNIX_EPOCH_US UINT64_C(62135596800000000)
+#define RTC_DAY_US UINT64_C(86400000000)
+#define RTC_MAX_TICK UINT64_C(315537897599999999)
+static uint64_t rtc_days_before_year(unsigned year) {
+    uint64_t y = year - 1;
+    return y * 365 + y / 4 - y / 100 + y / 400;
+}
+static int rtc_date_from_tick(uint64_t tick, unsigned fields[6]) {
+    static const unsigned month_days[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    unsigned low = 1, high = 10000, month = 1;
+    uint64_t day, seconds;
+    if (tick > RTC_MAX_TICK) return 0;
+    day = tick / RTC_DAY_US;
+    while (low + 1 < high) {
+        unsigned middle = low + (high - low) / 2;
+        if (rtc_days_before_year(middle) <= day) low = middle; else high = middle;
+    }
+    day -= rtc_days_before_year(low);
+    for (; month < 12; ++month) {
+        unsigned length = month_days[month - 1];
+        if (month == 2 && low % 4 == 0 && (low % 100 != 0 || low % 400 == 0)) ++length;
+        if (day < length) break;
+        day -= length;
+    }
+    seconds = tick % RTC_DAY_US / 1000000;
+    fields[0] = low; fields[1] = month; fields[2] = (unsigned)day + 1;
+    fields[3] = (unsigned)(seconds / 3600);
+    fields[4] = (unsigned)(seconds / 60 % 60);
+    fields[5] = (unsigned)(seconds % 60);
+    return 1;
+}
+static int rtc_tick_now(uint64_t *out) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0 || now.tv_nsec < 0 || now.tv_nsec >= 1000000000L)
+        return 0;
+    /* Bound before multiplication; supported calendar years are 1..9999. */
+    if (now.tv_sec < INT64_C(-62135596800) || now.tv_sec > INT64_C(253402300799)) return 0;
+    *out = (uint64_t)((int64_t)now.tv_sec * INT64_C(1000000) + (int64_t)RTC_UNIX_EPOCH_US)
+         + (uint64_t)now.tv_nsec / 1000;
+    return 1;
+}
+static uint32_t h_RtcGetCurrentTick(CpuState *s) {
+    uint64_t tick;
+    if (!rtc_tick_now(&tick)) return 0x80010005u;
+    if (A0) { MEM_W32(A0, (uint32_t)tick); MEM_W32(A0 + 4, (uint32_t)(tick >> 32)); }
+    return 0;
+}
+static uint32_t h_RtcGetAccumulativeTime(CpuState *s) {
+    uint64_t tick;
+    if (!rtc_tick_now(&tick)) { s->r[3] = UINT32_MAX; return 0x80010005u; }
+    s->r[3] = (uint32_t)(tick >> 32);
+    return (uint32_t)tick;
+}
+static uint32_t h_RtcSetTick(CpuState *s) {
+    unsigned fields[6];
+    const uint64_t tick = MEM_R32(A1) | ((uint64_t)MEM_R32(A1 + 4) << 32);
+    if (!rtc_date_from_tick(tick, fields)) return 0x80010016u;
+    for (unsigned i = 0; i < 6; ++i) MEM_W16(A0 + i * 2, fields[i]);
+    MEM_W32(A0 + 12, (uint32_t)(tick % 1000000));
+    return 0;
+}
+#endif
 
 static uint32_t s_cpu_mhz = 222, s_bus_mhz = 111;
 static uint32_t h_PowerSetClock(CpuState *s) { s_cpu_mhz = A1; s_bus_mhz = A2; return 0; }
@@ -352,12 +425,14 @@ static uint32_t h_MsgDialogAbort(CpuState *s) { (void)s; if (s_msg_status) s_msg
 
 void sr_host_path(const char *guest, char *out, int max);
 
-static void guest_str(uint32_t a, char *out, int max) {
+static int guest_str(uint32_t a, char *out, int max) {
     int i = 0;
     for (; i < max - 1; i++) { char c = (char)MEM_R8(a + (uint32_t)i); if (!c) break; out[i] = c; }
     out[i] = 0;
+    return i < max - 1 || MEM_R8(a + (uint32_t)i) == 0;
 }
 
+#ifdef _WIN32
 typedef struct { int used; HANDLE h; WIN32_FIND_DATAA fd; int first, dot, real; char prefix[512]; } DirH;
 int sr_ms_path(const char *guest, char *out, int max);   /* hle.c: ms0: -> real memory stick folder */
 static DirH s_dirs[8];
@@ -437,6 +512,121 @@ static uint32_t h_IoDclose(CpuState *s) {
     s_dirs[id].used = 0;
     return 0;
 }
+#else
+int sr_ms_path(const char *guest, char *out, int max);
+typedef struct {
+    int used, dot, real;
+    SrHostDir *directory;
+    char prefix[512];
+} DirH;
+static DirH s_dirs[8];
+static uint32_t io_error_from_errno(int code) {
+    switch (code) {
+    case ENOENT: return 0x80010002u;
+    case EACCES: case EPERM: return 0x8001000du;
+    case ENOTDIR: return 0x80010014u;
+    case EINVAL: return 0x80010016u;
+    case EMFILE: case ENFILE: return 0x80010018u;
+    case ENAMETOOLONG: return 0x80010024u;
+    case ENOMEM: return 0x8001000cu;
+    default: return 0x80010005u;
+    }
+}
+static uint32_t io_error_from_dir(const SrDirError *error) {
+    switch (error->status) {
+    case SR_DIR_MISSING: return 0x80010002u;
+    case SR_DIR_DENIED: return 0x8001000du;
+    case SR_DIR_NOT_DIRECTORY: return 0x80010014u;
+    case SR_DIR_INVALID: return 0x80010016u;
+    case SR_DIR_TOO_LONG: return 0x80010024u;
+    case SR_DIR_NOMEM: return 0x8001000cu;
+    case SR_DIR_UNSUPPORTED: return 0x80010026u;
+    default: return error->native_code ? io_error_from_errno((int)error->native_code) : 0x80010005u;
+    }
+}
+static uint32_t h_IoDopen(CpuState *s) {
+    char guest[256], path[512], directory[512];
+    SrDirError error;
+    int slot;
+    if (!guest_str(A0, guest, sizeof(guest))) return 0x80010024u;
+    int real = sr_ms_path(guest, path, sizeof(path));
+    if (!real) sr_host_path(guest, path, sizeof(path));
+    if (!path[0]) return 0x80010016u;
+    for (slot = 0; slot < 8 && s_dirs[slot].used; ++slot) { }
+    if (slot == 8) return 0x80010018u;
+    DirH candidate;
+    memset(&candidate, 0, sizeof(candidate));
+    candidate.real = real;
+    if (real) {
+        memcpy(directory, path, strlen(path) + 1);
+    } else {
+        const char *leaf = strrchr(path, '/');
+        const char *base = leaf ? leaf + 1 : path;
+        const size_t root_length = leaf ? (size_t)(leaf - path) : 0;
+        const int n = snprintf(candidate.prefix, sizeof(candidate.prefix), "%s_", base);
+        if (n < 0 || (size_t)n >= sizeof(candidate.prefix)) return 0x80010024u;
+        if (!leaf) memcpy(directory, ".", 2);
+        else if (!root_length) memcpy(directory, "/", 2);
+        else { memcpy(directory, path, root_length); directory[root_length] = 0; }
+    }
+    if (sr_dir_open(directory, &candidate.directory, &error) != 0) return io_error_from_dir(&error);
+    candidate.used = 1;
+    s_dirs[slot] = candidate;
+    if (getenv("SR_IOLOG")) fprintf(stderr, "Dopen(%s) -> %d (%s)\n", guest, slot, real ? "folder" : "flattened");
+    return 0x100u + (uint32_t)slot;
+}
+/* SceIoDirent = SceIoStat 0x58 bytes followed by 256-byte name. */
+static void write_dirent(uint32_t ent, const char *name, int is_dir, uint64_t size) {
+    for (uint32_t i = 0; i < 0x58 + 256; ++i) MEM_W8(ent + i, 0);
+    MEM_W32(ent, (is_dir ? 0x1000u : 0x2000u) | 0x1ffu);
+    MEM_W32(ent + 4, is_dir ? 0x10u : 0x20u);
+    MEM_W32(ent + 8, (uint32_t)size); MEM_W32(ent + 12, (uint32_t)(size >> 32));
+    for (unsigned i = 0; name[i] && i < 255; ++i) MEM_W8(ent + 0x58 + i, (uint8_t)name[i]);
+}
+static uint32_t h_IoDread(CpuState *s) {
+    const uint32_t id = A0 - 0x100u;
+    SrDirEntry entry;
+    SrDirError error;
+    if (id >= 8 || !s_dirs[id].used) return 0x80010009u;
+    DirH *dir = &s_dirs[id];
+    if (dir->dot < 2) { write_dirent(A1, dir->dot++ ? ".." : ".", 1, 0); return 1; }
+    for (;;) {
+        int next = sr_dir_next(dir->directory, &entry, &error);
+        if (next < 0) return io_error_from_dir(&error);
+        if (!next) return 0;
+        const char *name = entry.name;
+        char component[256];
+        int is_dir = entry.kind == SR_DIR_DIRECTORY;
+        if (!dir->real) {
+            size_t prefix_length = strlen(dir->prefix), n = 0;
+            if (strncmp(name, dir->prefix, prefix_length)) continue;
+            name += prefix_length;
+            while (name[n] && name[n] != '_' && n < sizeof(component) - 1) { component[n] = name[n]; ++n; }
+            component[n] = 0;
+            if (!n) continue;
+            is_dir = name[n] == '_';
+            name = component;
+        }
+        /* The PSP FAT memory-stick provider cannot expose host symlinks/devices. */
+        if (entry.kind != SR_DIR_DIRECTORY && entry.kind != SR_DIR_REGULAR) return 0x80010026u;
+        struct stat attributes;
+        if (lstat(entry.path, &attributes) != 0) return io_error_from_errno(errno);
+        if (!S_ISDIR(attributes.st_mode) && !S_ISREG(attributes.st_mode)) return 0x80010026u;
+        if (attributes.st_size < 0) return 0x80010005u;
+        write_dirent(A1, name, is_dir, is_dir ? 0 : (uint64_t)attributes.st_size);
+        return 1;
+    }
+}
+static uint32_t h_IoDclose(CpuState *s) {
+    const uint32_t id = A0 - 0x100u;
+    SrDirError error;
+    if (id >= 8 || !s_dirs[id].used) return 0x80010009u;
+    int result = sr_dir_close(s_dirs[id].directory, &error);
+    memset(&s_dirs[id], 0, sizeof(s_dirs[id]));
+    return result == 0 ? 0 : io_error_from_dir(&error);
+}
+#endif
+#ifdef _WIN32
 static uint32_t h_IoRemove(CpuState *s) {
     char g[256], hp[512];
     guest_str(A0, g, sizeof(g));
@@ -444,6 +634,16 @@ static uint32_t h_IoRemove(CpuState *s) {
     if (getenv("SR_IOLOG")) fprintf(stderr, "Remove(%s)\n", g);
     return remove(hp) == 0 ? 0 : 0x80010002;
 }
+#else
+static uint32_t h_IoRemove(CpuState *s) {
+    char guest[256], path[512];
+    if (!guest_str(A0, guest, sizeof(guest))) return 0x80010024u;
+    sr_host_path(guest, path, sizeof(path));
+    if (!path[0]) return 0x80010016u;
+    if (getenv("SR_IOLOG")) fprintf(stderr, "Remove(%s)\n", guest);
+    return remove(path) == 0 ? 0 : io_error_from_errno(errno);
+}
+#endif
 /* Directories are implicit in the flattened store, so mkdir/rmdir/chdir/chstat just succeed. */
 static uint32_t h_IoIoctl(CpuState *s) {
     static int n = 0;

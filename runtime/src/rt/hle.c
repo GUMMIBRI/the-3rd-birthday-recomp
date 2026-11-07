@@ -26,10 +26,21 @@
 #include <string.h>
 #include <wchar.h>
 #include <setjmp.h>
+#ifdef _WIN32
 #include <direct.h>   /* _mkdir for the writable fs/ scratch dir */
 #include <time.h>     /* timespec_get: intro skip timeouts */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>  /* memory stick folders: CreateDirectoryA, GetFileAttributesExA, ... */
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#include <strings.h>
+#include <errno.h>
+#include "platform/host_dir.h"
+#define _strnicmp strncasecmp
+#define _mkdir(path) mkdir(path, 0770)
+#endif
+#include "platform/clock.h"
 
 uint32_t sr_last_nid = 0;
 
@@ -869,6 +880,7 @@ static Fd s_fds[64];
 /* ms0:/fatms0: paths live in the memory stick directory with their real folder structure --
  * the same tree sceUtilitySavedata (savedata.c) and PPSSPP use, so Data Install writes
  * <memstick>/PSP/SAVEDATA/ULUS10567DATA/3RDINS.BIN like the PSP. Returns 0 for other devices. */
+#ifdef _WIN32
 int sr_ms_path(const char *guest, char *out, int max) {
     const char *rest;
     if (!_strnicmp(guest, "ms0:", 4)) rest = guest + 4;
@@ -884,7 +896,38 @@ int sr_ms_path(const char *guest, char *out, int max) {
     out[n] = 0;
     return 1;
 }
+#else
+int sr_ms_path(const char *guest, char *out, int max) {
+    const char *rest;
+    if (!guest || !out || max <= 0) return 0;
+    out[0] = 0;
+    if (!strncasecmp(guest, "ms0:", 4)) rest = guest + 4;
+    else if (!strncasecmp(guest, "fatms0:", 7)) rest = guest + 7;
+    else return 0;
+    const char *root = getenv("SR_MEMSTICK");
+    if (!root || !*root) root = "user/memstick";
+    if (snprintf(out, (size_t)max, "%s", root) >= max) { out[0] = 0; return 1; }
+    while (*rest == '/' || *rest == '\\') ++rest;
+    while (*rest) {
+        char leaf[SR_DIR_NAME_CAPACITY], joined[SR_DIR_PATH_CAPACITY];
+        size_t n = 0;
+        while (*rest && *rest != '/' && *rest != '\\') {
+            if (n + 1 >= sizeof(leaf)) { out[0] = 0; return 1; }
+            leaf[n++] = *rest++;
+        }
+        leaf[n] = 0;
+        SrDirError error;
+        if (sr_dir_join(out, leaf, joined, sizeof(joined), &error) != 0 || strlen(joined) >= (size_t)max) {
+            out[0] = 0; return 1;
+        }
+        memcpy(out, joined, strlen(joined) + 1);
+        while (*rest == '/' || *rest == '\\') ++rest;
+    }
+    return 1;
+}
+#endif
 
+#ifdef _WIN32
 static void host_path(const char *guest, char *out, int max) {
     if (sr_ms_path(guest, out, max)) return;
     const char *dir = getenv("SR_FSDIR");
@@ -898,6 +941,28 @@ static void host_path(const char *guest, char *out, int max) {
     }
     out[n] = 0;
 }
+#else
+static void host_path(const char *guest, char *out, int max) {
+    char leaf[SR_DIR_NAME_CAPACITY];
+    size_t n = 0;
+    SrDirError error;
+    if (!out || max <= 0) return;
+    out[0] = 0;
+    if (!guest || sr_ms_path(guest, out, max)) return;
+    const char *dir = getenv("SR_FSDIR");
+    if (!dir || !*dir) dir = "user/fs";
+    for (size_t i = 0; guest[i]; ++i) {
+        char c = guest[i];
+        if (n + 1 >= sizeof(leaf)) return;
+        leaf[n++] = (c == '/' || c == ':' || c == '\\' || c == ' ') ? '_' : c;
+    }
+    leaf[n] = 0;
+    /* Root must already exist under the validated app anchor. Path translation
+     * never creates mount ancestors or turns a metadata query into a write.
+     */
+    if (sr_dir_join(dir, leaf, out, (size_t)max, &error) != 0) out[0] = 0;
+}
+#endif
 
 static uint32_t h_IoOpen(CpuState *s) {
     /* a0=path, a1=flags, a2=mode. Returns an fd (>=0) or a negative error.
@@ -964,15 +1029,27 @@ static uint32_t h_IoMkdir(CpuState *s) {
     char g[256], hp[512]; guest_cstr(A0, g, sizeof(g));
     if (!sr_ms_path(g, hp, sizeof(hp))) return 0;
     if (getenv("SR_IOLOG")) fprintf(stderr, "Mkdir(%s)\n", g);
+#ifdef _WIN32
     if (CreateDirectoryA(hp, NULL)) return 0;
-    return GetLastError() == ERROR_ALREADY_EXISTS ? 0x80010011u : 0x80010002u;   /* EEXIST / ENOENT */
+    return GetLastError() == ERROR_ALREADY_EXISTS ? 0x80010011u : 0x80010002u;
+#else
+    if (!hp[0]) return 0x80010016u;
+    if (mkdir(hp, 0770) == 0) return 0;
+    return errno == EEXIST ? 0x80010011u : errno == EACCES ? 0x8001000du : 0x80010002u;
+#endif   /* EEXIST / ENOENT */
 }
 static uint32_t h_IoRmdir(CpuState *s) {
     char g[256], hp[512]; guest_cstr(A0, g, sizeof(g));
     if (!sr_ms_path(g, hp, sizeof(hp))) return 0;
     if (getenv("SR_IOLOG")) fprintf(stderr, "Rmdir(%s)\n", g);
+#ifdef _WIN32
     if (RemoveDirectoryA(hp)) return 0;
-    return GetLastError() == ERROR_DIR_NOT_EMPTY ? 0x8001005Au : 0x80010002u;     /* ENOTEMPTY / ENOENT */
+    return GetLastError() == ERROR_DIR_NOT_EMPTY ? 0x8001005Au : 0x80010002u;
+#else
+    if (!hp[0]) return 0x80010016u;
+    if (rmdir(hp) == 0) return 0;
+    return errno == ENOTEMPTY || errno == EEXIST ? 0x8001005au : errno == EACCES ? 0x8001000du : 0x80010002u;
+#endif     /* ENOTEMPTY / ENOENT */
 }
 static uint32_t h_IoRename(CpuState *s) {
     char a[256], b[256], ha[512], hb[512];
@@ -983,7 +1060,12 @@ static uint32_t h_IoRename(CpuState *s) {
         snprintf(b, sizeof(b), "%s", t);
     }
     host_path(a, ha, sizeof(ha)); host_path(b, hb, sizeof(hb));
+#ifdef _WIN32
     return MoveFileExA(ha, hb, MOVEFILE_REPLACE_EXISTING) ? 0 : 0x80010002u;
+#else
+    if (!ha[0] || !hb[0]) return 0x80010016u;
+    return rename(ha, hb) == 0 ? 0 : errno == EACCES ? 0x8001000du : 0x80010002u;
+#endif
 }
 uint32_t sr_h_IoMkdir(CpuState *s) { return h_IoMkdir(s); }
 uint32_t sr_h_IoRmdir(CpuState *s) { return h_IoRmdir(s); }
@@ -1119,15 +1201,30 @@ static uint32_t h_IoGetstat(CpuState *s) {
     uint32_t lba, size, st = A1;
     {   /* memory stick / writable host files and folders */
         char hp[512];
+#ifdef _WIN32
         WIN32_FILE_ATTRIBUTE_DATA fa;
+#else
+        struct stat fa;
+#endif
         const int ms = sr_ms_path(path, hp, sizeof(hp));
         if (!ms) host_path(path, hp, sizeof(hp));
+#ifdef _WIN32
         if (GetFileAttributesExA(hp, GetFileExInfoStandard, &fa)) {
             const int dir = (fa.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+        if (!hp[0]) return 0x80010016u;
+        if (lstat(hp, &fa) == 0) {
+            if (S_ISLNK(fa.st_mode)) return 0x8001000du;
+            const int dir = S_ISDIR(fa.st_mode);
+#endif
             for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
             MEM_W32(st + 0, (dir ? 0x1000u : 0x2000u) | 0x1FFu);
             MEM_W32(st + 4, dir ? 0x10u : 0x20u);
+#ifdef _WIN32
             if (!dir) { MEM_W32(st + 8, fa.nFileSizeLow); MEM_W32(st + 12, fa.nFileSizeHigh); }
+#else
+            if (!dir) { uint64_t bytes = (uint64_t)fa.st_size; MEM_W32(st + 8, (uint32_t)bytes); MEM_W32(st + 12, (uint32_t)(bytes >> 32)); }
+#endif
             if (getenv("SR_STATLOG")) fprintf(stderr, "Getstat(%s) -> host %s\n", path, dir ? "dir" : "file");
             return 0;
         }
@@ -1406,8 +1503,8 @@ int g_mpeg_live = 0;                       /* movie sessions open right now (mpe
  * notice still waits for the player); the first movie is the opening, which the game skips on
  * START, so START is tapped until it closes. Returns the buttons to add to this sample. */
 static uint64_t intro_ms(void) {
-    struct timespec ts; timespec_get(&ts, TIME_UTC);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+    const int64_t ticks = sr_clock_ticks(), frequency = sr_clock_frequency();
+    return (uint64_t)(ticks / frequency) * 1000u + (uint64_t)((ticks % frequency) * 1000 / frequency);
 }
 static uint32_t intro_skip_tick(void) {
     static int state = -1;                 /* 1 fast-forward, 2 skipping the opening, 0 done/off */
