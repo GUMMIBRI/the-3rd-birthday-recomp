@@ -72,6 +72,15 @@ metadata stayed unchanged. No other files were targeted and no app was launched.
 The write slot is released; Cinder confirmed the other queued uploads complete.
 The previous PE3 background overlay is now a preserved historical baseline.
 
+The owner-approved PE3-only successor corrects handgun orientation/grip, adds
+combat boots and curves the three muted red mitochondrial shapes. Both selected
+DDS files were delivered; private receipt:
+`build/private-pe3-grip-boots-update-r1/RESULT.json`. Previous installed local
+backgrounds are backed up. Local SHA/upload completion/remote type-size passed;
+current icon/parameter remote hashes and protected executable/module/ISO metadata
+remained unchanged. No PE2 file was targeted, no app was launched and the write
+slot is released. Shell artwork refresh/appearance remains human-observed.
+
 Actual static checks passed:
 
 - One verified preparation cohort compiled; source/image/module GP/base/entry
