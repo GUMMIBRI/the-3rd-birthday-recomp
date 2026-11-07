@@ -59,8 +59,6 @@ int main(int argc, char **argv) {
     /* Paths supplied by the eventual title launcher. No implicit data scan or
      * mount-root creation; missing inputs are fatal rather than fake boot.
      */
-    SrHostDir *anchor;
-    SrDirError error;
     const uint32_t base = sr_native_game.base, entry = sr_native_game.entry;
     char memstick[SR_DIR_PATH_CAPACITY], scratch[SR_DIR_PATH_CAPACITY], mods[SR_DIR_PATH_CAPACITY];
     CpuState cpu;
@@ -78,24 +76,8 @@ int main(int argc, char **argv) {
 #else
     const char *resource_root = argv[1];
 #endif
-    uint32_t anchor_step = 0;
-#ifdef SR_PS5_DIRECTORY_PROVIDER
-    const int anchor_result = sr_dir_open_detailed(resource_root, &anchor, &error,
-                                                   &anchor_step);
-#else
-    const int anchor_result = sr_dir_open(resource_root, &anchor, &error);
-#endif
-    if (anchor_result != 0) {
-        fprintf(stderr, "native game: app anchor %s unavailable: %d/%u\n",
-                resource_root, error.status, error.native_code);
-        return anchor_step ? (int)anchor_step : 23;
-    }
-    /* Keep the authenticated root handle live for the application's lifetime.
-     * This is not a claim of write confinement; writes are separately gated.
-     */
     if (chdir(resource_root) != 0) {
         const int cwd_error = errno;
-        sr_dir_close(anchor, &error);
         fprintf(stderr, "native game: cannot select working directory %s: %d\n",
                 resource_root, cwd_error);
         return 24;
@@ -112,6 +94,10 @@ int main(int argc, char **argv) {
         setenv("XDG_CACHE_HOME", mods, 1) != 0 ||
         setenv("TMPDIR", mods, 1) != 0 ||
         setenv("MESA_SHADER_CACHE_DISABLE", "true", 1) != 0 ||
+#if defined(__PS5__) || defined(SR_PS5_SELECTED_APP)
+        setenv("PSP_VFPU_TABLES", "/app0/assets/vfpu", 1) != 0 ||
+        setenv("SR_FONTDIR", "/app0/font", 1) != 0 ||
+#endif
         setenv("PSP_ISO", argv[2], 1) != 0) {
         fprintf(stderr, "native game: startup environment setup failed: %d\n", errno);
         return 26;

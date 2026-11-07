@@ -214,3 +214,9 @@ The latest captured matching SIGSYS preceded this path-only upload. The
 that address alone cannot distinguish them. Bind the next launch using the
 installed file receipt, console time, ShadowMount title and PID, and the
 matching kernel exit record. The kernel log renders exit codes in hex.
+
+The next candidate removes the unused startup directory handle after the
+installed directory diagnostic reported hex 29 (decimal 41), meaning
+lstat("/app0") failed. chdir("/app0") retains stage 24. Packaged VFPU tables
+and fonts use explicit /app0 paths. The USB ISO selection, directory
+enumeration provider and write gate remain in use.
