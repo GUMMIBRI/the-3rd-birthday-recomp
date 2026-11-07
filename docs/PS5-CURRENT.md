@@ -62,6 +62,16 @@ readback or remote hash claims. The current icon and parameter remote hashes,
 and protected EBOOT/ISO metadata remained unchanged. No automatic launch occurred;
 the write slot was released. Preserve both overlay receipts for future updates.
 
+Cinder later selected the pose/leg-alignment successor backgrounds for PE2 and
+PE3. After explicit release of PE2's completed HD transfer and a Cinder slot grant,
+the four selected DDS files were delivered. Combined private receipt:
+`build/private-trilogy-background-update-r1/RESULT.json`. Four original local
+backgrounds are backed up. Local SHA/upload completion/remote type-size passed;
+both apps' current icon/parameter remote hashes and protected executable/module
+metadata stayed unchanged. No other files were targeted and no app was launched.
+The write slot is released; Cinder confirmed the other queued uploads complete.
+The previous PE3 background overlay is now a preserved historical baseline.
+
 Actual static checks passed:
 
 - One verified preparation cohort compiled; source/image/module GP/base/entry
