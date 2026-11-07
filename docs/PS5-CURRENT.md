@@ -18,6 +18,13 @@ The resulting `eboot.bin` is under
 contains game-derived code/data; never upload it or its fingerprints to GitHub.
 The original tester-supplied ISO, SMB source and earlier artifacts are preserved.
 
+The selected private app folder is `build/private-delivery-r3/PPSA77025`, with
+36 hash-bound files: EBOOT, metadata, original mandatory 512x512 icon, fonts,
+VFPU tables and notices. Packaging gates pass; console delivery, launcher
+discovery and boot remain pending. Earlier local candidates are preserved.
+See `PS5-INSTALL-PLAN.md` for Cinder's reviewed recoverable USB file-delivery
+sequence. Atomic whole-directory activation is not required or claimed.
+
 Actual static checks passed:
 
 - One verified preparation cohort compiled; source/image/module GP/base/entry
@@ -91,7 +98,7 @@ exclusively dispatches any separate helper account. Native read-only anchor work
 and local delivery preparation are isolated worker tasks; check actual current
 worker status before dispatching or editing owned files.
 
-Continue native provider/ABI work, finalize the local app metadata/runtime tables,
+Continue native provider/ABI work and finish reviewed USB transfer tooling,
 and obtain the human's actual boot/control/movie/combat evidence after an approved
 USB-only installation. Console writes require current authorization and fresh
 closed-game confirmation; no autonomous launch. Keep other project apps/saves
