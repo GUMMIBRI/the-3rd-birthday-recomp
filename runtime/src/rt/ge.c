@@ -21,6 +21,7 @@
  */
 
 #define _CRT_SECURE_NO_WARNINGS
+#include "platform/storage_gate.h"
 #include "recomp.h"
 #include "ge_shared.h"
 
@@ -602,11 +603,11 @@ static void texdump_maybe(void) {
     if (w <= 0 || h <= 0 || w > 512 || h > 512) return;
     char path[160];
     snprintf(path, sizeof(path), "tex_%08x_f%u_%dx%d.ppm", ge.tex_addr, ge.tex_fmt, w, h);
-    FILE *fp = fopen(path, "wb");
+    FILE *fp = (sr_storage_require_write() ? fopen(path, "wb") : NULL);
     if (!fp) return;
     char patha[160];
     snprintf(patha, sizeof(patha), "tex_%08x_f%u_%dx%d_a.pgm", ge.tex_addr, ge.tex_fmt, w, h);
-    FILE *fa = fopen(patha, "wb");
+    FILE *fa = (sr_storage_require_write() ? fopen(patha, "wb") : NULL);
     fprintf(fp, "P6\n%d %d\n255\n", w, h);
     if (fa) fprintf(fa, "P5\n%d %d\n255\n", w, h);
     for (int v = 0; v < h; v++)
@@ -2373,7 +2374,7 @@ static void draw_prim(uint32_t op) {
 /* Unconditional framebuffer snapshot (no "best frame" gating) for SR_FBSNAP. */
 static void ge_snapshot_plain(const char *path) {
     uint32_t fb = ge_fb_addr(), stride = ge.fbw ? ge.fbw : 512;
-    FILE *f = fopen(path, "wb");
+    FILE *f = (sr_storage_require_write() ? fopen(path, "wb") : NULL);
     if (!f) return;
     fprintf(f, "P6\n480 272\n255\n");
     for (int y = 0; y < 272; y++)
@@ -2399,7 +2400,7 @@ static void ge_snapshot(const char *path) {
         if (r|g|b) nb++;
     }
     static long best=-1; if (nb<=best) return; best=nb;
-    FILE *f=fopen(path,"wb"); if(!f) return;
+    FILE *f=(sr_storage_require_write() ? fopen(path, "wb") : NULL); if(!f) return;
     fprintf(f,"P6\n480 272\n255\n"); fwrite(img,1,sizeof(img),f); fclose(f);
 }
 

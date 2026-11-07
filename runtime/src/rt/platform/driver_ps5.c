@@ -71,15 +71,27 @@ int main(int argc, char **argv) {
     if (base < 0x08000000u || base >= 0x0c000000u || entry < base || entry >= 0x0c000000u || (entry & 3u)) {
         fprintf(stderr, "native game: invalid prepared image address range\n"); return 22;
     }
-    if (sr_dir_open(argv[1], &anchor, &error) != 0) {
-        fprintf(stderr, "native game: app anchor unavailable: %d/%u\n", error.status, error.native_code); return 23;
+    /* The loader mounts the running title at /app0. Keep the physical USB
+     * path separate for user storage and the explicitly selected ISO. */
+#if defined(__PS5__) || defined(SR_PS5_SELECTED_APP)
+    const char *resource_root = "/app0";
+#else
+    const char *resource_root = argv[1];
+#endif
+    if (sr_dir_open(resource_root, &anchor, &error) != 0) {
+        fprintf(stderr, "native game: app anchor %s unavailable: %d/%u\n",
+                resource_root, error.status, error.native_code);
+        return 23;
     }
     /* Keep the authenticated root handle live for the application's lifetime.
      * This is not a claim of write confinement; writes are separately gated.
      */
-    if (chdir(argv[1]) != 0) {
+    if (chdir(resource_root) != 0) {
+        const int cwd_error = errno;
         sr_dir_close(anchor, &error);
-        fprintf(stderr, "native game: cannot select app-owned working directory\n"); return 24;
+        fprintf(stderr, "native game: cannot select working directory %s: %d\n",
+                resource_root, cwd_error);
+        return 24;
     }
     if (snprintf(memstick, sizeof(memstick), "%s/user/memstick", argv[1]) >= (int)sizeof(memstick) ||
         snprintf(scratch, sizeof(scratch), "%s/user/fs", argv[1]) >= (int)sizeof(scratch) ||

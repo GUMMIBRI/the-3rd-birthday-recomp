@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory=$true)][string]$PreparedDirectory,
     [Parameter(Mandatory=$true)][string]$ConsoleIsoPath,
     [string]$AppRoot = '/mnt/usb0/homebrew/PPSA77025',
-    [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$LinkName = 'native-link'
+    [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$LinkName = 'native-link',
+    [string]$RuntimeDirectory = 'build/ps5-runtime'
 )
 # Private real-game native application link. Never installs, starts or publishes.
 $ErrorActionPreference = 'Stop'
@@ -15,6 +16,7 @@ try {
         $ConsoleIsoPath.Split('/') -contains '..') { throw 'Invalid selected USB paths' }
     $base = (Resolve-Path -LiteralPath $PlatformRoot).Path.Replace('\','/')
     $prepared = (Resolve-Path -LiteralPath $PreparedDirectory).Path.Replace('\','/')
+    $runtime = (Resolve-Path -LiteralPath $RuntimeDirectory).Path.Replace('\','/')
     $sdk = "$base/deps/ps5-payload-sdk/target"
     $radvSdk = "$base/deps/radv-sdk/ps5-payload-sdk/target"
     $llvm = "$base/deps/llvm/bin"
@@ -33,7 +35,7 @@ try {
     [IO.File]::WriteAllText("$out/ps5_app_config.h", $config)
     $flags = @('--target=x86_64-sie-ps5', "--sysroot=$sdk", '-isystem', "$sdk/include",
         '-I', "$base/attempt-resolution-mods-20261031/install-sdl/include", '-I', "$base/deps/radv-release/include",
-        '-I', "$platform/platform/include", '-I', 'build/ps5-runtime', '-I', $out, '-Iruntime/src/rt',
+        '-I', "$platform/platform/include", '-I', $runtime, '-I', $out, '-Iruntime/src/rt',
         '-DSR_NATIVE_GAME', '-DSR_PS5_SELECTED_APP', '-DSR_SDL3VK', '-DSR_VK_DISPATCH',
         '-DSR_FIBER_SYSV', '-DSR_PS5_DIRECT_STACKS', '-DSR_PS5_DIRECTORY_PROVIDER',
         '-std=gnu11', '-O2', '-g', '-fPIC', '-fno-stack-protector', '-fno-plt', '-femulated-tls',
@@ -83,7 +85,7 @@ try {
     foreach ($name in @('malloc','calloc','realloc','free','posix_memalign','aligned_alloc','memalign','malloc_usable_size',
         'reallocf','reallocarray','getline','getdelim','pthread_create','pthread_join','pthread_detach')) { $args += "--wrap=$name" }
     $args += @($gameObjects | ForEach-Object { $_.Path.Replace('\','/') })
-    $args += @(Get-ChildItem build/ps5-runtime/*.o | Where-Object {$_.BaseName -ne 'platform_driver_ps5' -and $_.BaseName -ne 'h264_ffmpeg'} | ForEach-Object {$_.FullName.Replace('\','/')})
+    $args += @(Get-ChildItem "$runtime/*.o" | Where-Object {$_.BaseName -ne 'platform_driver_ps5' -and $_.BaseName -ne 'h264_ffmpeg'} | ForEach-Object {$_.FullName.Replace('\','/')})
     $args += @(Get-ChildItem "$out/*.o" | ForEach-Object {$_.FullName.Replace('\','/')})
     $args += @(Get-ChildItem build/ps5-at3/*.o | ForEach-Object {$_.FullName.Replace('\','/')})
     $args += "$base/attempt-resolution-mods-20261031/install-sdl/lib/libSDL3.a"

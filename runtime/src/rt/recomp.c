@@ -1,5 +1,6 @@
 /* Runtime implementation. See recomp.h. */
 
+#include "platform/storage_gate.h"
 #include "recomp.h"
 
 #include <stdio.h>
@@ -398,7 +399,7 @@ void dispatch(CpuState *s, uint32_t target) {
     /* Dump user RAM so the missing code (runtime-loaded overlay / module) can be identified
      * and recompiled offline: tools/analyze.py + codegen.py accept a flat image + base. */
     {
-        FILE *f = fopen("dispatch_dump.bin", "wb");
+        FILE *f = (sr_storage_require_write() ? fopen("dispatch_dump.bin", "wb") : NULL);
         if (f) {
             fwrite(SR_HOST(0x08800000u), 1, 0x01800000u, f);   /* 0x08800000..0x0A000000 */
             fclose(f);
@@ -437,7 +438,7 @@ static uint32_t s_r[32], s_fi[32], s_vi[128], s_hi, s_lo, s_fcr31, s_pc, s_op;
 static unsigned long long s_step = 0;
 
 int sr_trace_open(const char *path, const char *target, uint32_t start_pc) {
-    s_fp = fopen(path, "wb");
+    s_fp = (sr_storage_require_write() ? fopen(path, "wb") : NULL);
     g_sr_dbg = 1;
     if (!s_fp) return -1;
     fprintf(s_fp, "# psp-recomp trace v1 oracle=recomp target=%s start_pc=0x%08x\n",

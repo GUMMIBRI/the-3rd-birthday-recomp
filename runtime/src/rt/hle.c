@@ -1457,7 +1457,7 @@ static uint32_t h_CtrlButtons(void) {
                         if (dumped[i] != scr[i].f + 1) {
                             dumped[i] = scr[i].f + 1;
                             char fn[48]; snprintf(fn, sizeof fn, "ram_%u.bin", (unsigned)s_vcount_fwd);
-                            FILE *rf = fopen(fn, "wb");
+                            FILE *rf = (sr_storage_require_write() ? fopen(fn, "wb") : NULL);
                             if (rf) { fwrite(SR_HOST(0x08800000u), 1, 0x01800000u, rf); fclose(rf); }
                             fprintf(stderr, "PADSCRIPT ramdump f=%u -> %s\n", (unsigned)s_vcount_fwd, fn);
                         }
@@ -1621,7 +1621,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         static int rd = -2;
         if (rd == -2) { const char *e = getenv("SR_RAMDUMP"); rd = e ? atoi(e) : -1; }
         if (rd >= 0 && s_vcount >= (uint32_t)rd) {
-            FILE *f = fopen("ram.bin", "wb");
+            FILE *f = (sr_storage_require_write() ? fopen("ram.bin", "wb") : NULL);
             if (f) { fwrite(SR_HOST(0x08800000u), 1, 0x01800000u, f); fclose(f); }
             fprintf(stderr, "RAMDUMP f=%u -> ram.bin\n", s_vcount);
             rd = -1;
@@ -1665,7 +1665,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         dump_fb_fmt("fb_present.ppm", s_framebuf, (int)A2, A1 ? A1 : 512);
         /* Also snapshot the whole 2MB eDRAM so any rendered region can be found regardless of which
          * buffer/stride/format the game settled on. */
-        FILE *raw = fopen("edram.bin", "wb");
+        FILE *raw = (sr_storage_require_write() ? fopen("edram.bin", "wb") : NULL);
         if (raw) { for (uint32_t a = 0x04000000; a < 0x04200000; a += 4) { uint32_t w = MEM_R32(a); fwrite(&w, 4, 1, raw); } fclose(raw); }
         sr_trace_close();
         extern unsigned long g_tex_samples, g_tex_nonzero;
@@ -1692,7 +1692,7 @@ static uint32_t h_DisplayGetFrameBuf(CpuState *s) {
 
 /* Dump a PSP framebuffer to a binary PPM. fmt: 0=5650, 1=5551, 2=4444, 3=8888. */
 static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t stride) {
-    FILE *f = fopen(path, "wb");
+    FILE *f = (sr_storage_require_write() ? fopen(path, "wb") : NULL);
     if (!f) return;
     if (!stride) stride = 512;
     fprintf(f, "P6\n480 272\n255\n");
@@ -2329,7 +2329,7 @@ void sr_syscall(CpuState *s, uint32_t nid) {
     if (nidlog < 0) { nidlog = getenv("SR_NIDLOG") ? 1 : 0; syslog_on = getenv("SR_SYSLOG") ? 1 : 0; }
     if (nidlog) {
         static FILE *nf = NULL; static unsigned long nc = 0;
-        if (!nf) nf = fopen("nidseq_mine.txt", "w");
+        if (!nf) nf = (sr_storage_require_write() ? fopen("nidseq_mine.txt", "w") : NULL);
         if (nf) { fprintf(nf, "0x%08x\n", nid); if ((++nc & 0x3f) == 0) fflush(nf); }
     }
     HleEntry *e = hle_find(nid);
