@@ -28,7 +28,7 @@ the manager must check the actual console immediately before any installation.
 Default inputs are the reviewed game conversion under
 `build/private-game-20261106-r2/native-link/converted-r1` and the strict
 `build/checks/GAME-SCE-VERIFY.json` post-conversion gate. The output is restricted
-to the ignored `build/private-delivery-r3` tree. A fresh output directory is
+to the ignored `build/private-delivery-r5` tree. A fresh output directory is
 required; an existing candidate is never silently replaced.
 
 The script can stage a `PENDING_POST_SCE_GATE` candidate when that final gate is
@@ -100,7 +100,7 @@ any tester input remain in the ignored build tree.
 The script staged a fresh 36-file hash-verified private candidate and passed its current
 post-SCE gate. The manifest records source-to-copy hashes for every required
 auxiliary file and inventory hashes for all app files. Exact private artifact
-hashes and paths are in `build/private-delivery-r3/STAGING-RESULT.json` and
+hashes and paths are in `build/private-delivery-r5/STAGING-RESULT.json` and
 `PACKAGE-MANIFEST.json`, not this public document.
 
 A local negative check substituted a passing-looking receipt with a different
@@ -126,11 +126,11 @@ receipt without changing the original `r3` placeholder candidate:
 ./scripts/package_ps5_app.ps1 -PlatformRoot <existing-public-platform-prefix> -ArtworkManifest <private-receipt.json>
 ```
 
-Providing `-ArtworkManifest` changes the fresh default output to ignored
-`build/private-delivery-r4`. Output is constrained to that tree, and an existing
-candidate is never overwritten. Finalization of that selection also requires
-the same receipt argument. Without the argument, the original `r3` selection
-and reviewed placeholder checks remain unchanged.
+Current packaging uses fresh ignored `build/private-delivery-r5` for either
+artwork selection. Earlier r3/r4 packages remain immutable. Output is constrained
+to the r5 tree and existing candidates are never overwritten. Finalization of
+a private-art selection requires the same receipt argument. Without it, the
+reviewed original placeholder is used; the loader companion is always required.
 
 The approved receipt interface has top-level `schemaVersion: 1`,
 `applicationId: "PPSA77025"`, and a `files` array. Each file provides:
@@ -175,7 +175,14 @@ selection before inclusion in the app.
 The extension was syntax-checked, its receipt/PNG/duplicate-target helpers were
 checked in memory using the existing public placeholder, and synthetic in-memory
 DDS headers exercised structural acceptance and dimension-mismatch rejection.
-No asset was changed or staged by those helper checks. No private artwork
-receipt or finalized Cinder asset was available to this task, so no `r4` candidate
-or private-art readiness claim was produced here. The manager must run the real
-receipt through the full staging and current post-SCE gates when it arrives.
+No asset was changed or staged by those helper checks. The manager subsequently staged selected private artwork in r4, then a coherent
+r5 package with the required signed loader companion and notices. See
+`PS5-CURRENT.md` for actual delivery and human startup evidence.
+
+## Required loader companion
+
+The first human launch failed with a kernel-confirmed missing PRX. The corrected
+recipe requires `sce_module/libc.prx`, its exact admitted public size/SHA256,
+and dedicated GPL/source attribution before readiness. The fresh-install tool
+also rejects packages lacking these files. See `PS5-LOADER-COMPANION.md`. An
+ELF/SELF-only pass never proves the surrounding application folder is complete.

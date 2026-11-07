@@ -93,7 +93,12 @@ def local_candidate(manifest_path):
         rows[relative] = dict(source=file, size=row["bytes"], sha256=row["sha256"].lower())
     actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
     require(set(rows) == actual and len(rows) == state.get("fileCount"), "Staged file inventory mismatch")
-    require({"eboot.bin", "sce_sys/param.json", "sce_sys/icon0.png"} <= set(rows), "Required app files missing")
+    require({"eboot.bin", "sce_sys/param.json", "sce_sys/icon0.png", "sce_module/libc.prx",
+             "notices/loader-companion/PROVENANCE.md", "notices/loader-companion/GPL-3.0.txt"} <= set(rows),
+            "Required app files or loader-companion notices missing")
+    require(rows["sce_module/libc.prx"]["size"] == 1284674 and rows["sce_module/libc.prx"]["sha256"] ==
+            "e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036",
+            "Required signed public loader companion differs from the pinned artifact")
     require(rows["eboot.bin"]["sha256"] == manifest["reviewedEbootSHA256"] == state["ebootSHA256"] and
             rows["sce_sys/param.json"]["sha256"] == state["paramSHA256"], "Finalized hash gate mismatch")
     metadata = read_json(rows["sce_sys/param.json"]["source"])

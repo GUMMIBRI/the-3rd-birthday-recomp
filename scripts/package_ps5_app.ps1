@@ -2,8 +2,9 @@ param(
     [Parameter(Mandatory=$true)][string]$PlatformRoot,
     [string]$EbootPath = 'build/private-game-20261106-r2/native-link/converted-r1/eboot.bin',
     [string]$SceAuditPath = 'build/checks/GAME-SCE-VERIFY.json',
-    [string]$OutputDirectory = 'build/private-delivery-r3',
+    [string]$OutputDirectory = 'build/private-delivery-r5',
     [string]$ArtworkManifest,
+    [string]$CompanionRuntime = 'C:/.pe/ps5-native/release-v1.1.6-build20-20261106/PACKAGE-ROOT/PPSA77022/sce_module/libc.prx',
     [string]$ParamSchemaReference = 'C:/.pe/ps5-native/release-v1.1.6-build20-20261106/PACKAGE-ROOT/PPSA77022/sce_sys/param.json',
     [switch]$Finalize
 )
@@ -11,8 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $privateArtworkSelected = ![string]::IsNullOrWhiteSpace($ArtworkManifest)
-if ($privateArtworkSelected -and !$PSBoundParameters.ContainsKey('OutputDirectory')) { $OutputDirectory = 'build/private-delivery-r4' }
-$ownedName = if ($privateArtworkSelected) { 'build/private-delivery-r4' } else { 'build/private-delivery-r3' }
+$ownedName = 'build/private-delivery-r5'
 $ownedRoot = [IO.Path]::GetFullPath((Join-Path $root $ownedName))
 function Digest([string]$file) { return (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() }
 function JsonFile([string]$file) { return Get-Content -LiteralPath $file -Raw | ConvertFrom-Json }
@@ -99,6 +99,8 @@ function PrivateArtwork([string]$receipt) {
 Push-Location $root
 try {
     $base = (Resolve-Path -LiteralPath $PlatformRoot).Path
+    $companion = (Resolve-Path -LiteralPath $CompanionRuntime).Path
+    Require ((Get-Item -LiteralPath $companion).Length -eq 1284674 -and (Digest $companion) -eq 'e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036') 'Missing or unrecognized signed public loader companion'
     $eboot = (Resolve-Path -LiteralPath $EbootPath).Path
     $converted = Split-Path $eboot -Parent
     $sce = Join-Path $converted 'eboot.elf'
@@ -149,6 +151,9 @@ try {
         }
         $param | ConvertTo-Json -Depth 8 | Set-Content "$app/sce_sys/param.json"
         $copies = @()
+        $copies += @{source=$companion;target='sce_module/libc.prx'}
+        $copies += @{source=(Join-Path $root 'docs/PS5-LOADER-COMPANION.md');target='notices/loader-companion/PROVENANCE.md'}
+        $copies += @{source="$base/upstream/PSXS5-5c17ea31aec5791c12451e915386fa98d670adb4/LICENSE";target='notices/loader-companion/GPL-3.0.txt'}
         if ($privateArtworkSelected) {
             foreach ($item in $artwork.files) { $copies += $item }
         } else {
@@ -227,6 +232,9 @@ Component notices are retained under notices/. Original rights remain unchanged.
     Require (Test-Path -LiteralPath $manifestFile -PathType Leaf) 'Staged candidate manifest missing'
     $manifest = JsonFile $manifestFile
     Require ($manifest.iconIncluded -eq $true) 'Mandatory native application icon was not staged'
+    $stagedCompanion = Join-Path $app 'sce_module/libc.prx'
+    Require ((Test-Path -LiteralPath $stagedCompanion -PathType Leaf) -and (Get-Item -LiteralPath $stagedCompanion).Length -eq 1284674 -and (Digest $stagedCompanion) -eq 'e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036') 'Required signed loader companion missing or changed'
+    Require ((Test-Path -LiteralPath "$app/notices/loader-companion/PROVENANCE.md" -PathType Leaf) -and (Test-Path -LiteralPath "$app/notices/loader-companion/GPL-3.0.txt" -PathType Leaf)) 'Loader companion notices are required'
     Require ($manifest.reviewedEbootSHA256 -eq (Digest $eboot) -and $manifest.reviewedSceSHA256 -eq (Digest $sce)) 'Staged candidate is from another reviewed EBOOT'
     Require ($manifest.sourceResultSHA256 -eq (Digest $resultFile)) 'Reviewed conversion result changed after staging'
     if ($privateArtworkSelected) {

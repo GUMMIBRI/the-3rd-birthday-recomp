@@ -75,8 +75,25 @@ Actual static checks passed:
   relocations and 25 PLT relocations match the independently checked model.
 - SELF inspection reports valid integrity. Corrupted verifier fixtures reject.
 
-There has been **no console launch, confirmed launcher registration, boot observation, gameplay,
-movie playback or save/reload test**. No full-game completion claim is made.
+The first human launch failed before game startup with `0xa0020102`
+(`PRX_SCE_MODULE_LOAD_ERROR`). Matching ShadowMount logs confirm registration and
+the launch; the kernel explicitly identifies the missing `sce_module` PRX.
+The original package omitted the required public loader companion. Main SELF
+audits did not catch this surrounding-filesystem requirement.
+
+The corrected coherent package is `build/private-delivery-r5/PPSA77025`, with
+39 files and the current selected artwork. Packaging and fresh-install admission
+now require the exact signed public `sce_module/libc.prx` plus dedicated GPL/source
+notices. Old r4 admission correctly fails. The three missing files were delivered
+additively on USB; receipt: `build/private-load-error-r1/USB-REPAIR-r2.json`.
+Local hashes/upload completion/remote type-size passed; EBOOT, artwork, ISO,
+parameter bytes and the current icon were preserved. The first identity attempt
+changed zero files: r5 metadata serialization order differed from the deployed
+r4 bytes despite equal JSON values. The correction used the actual immutable
+deployed metadata baseline. Both receipts remain private and preserved.
+
+No autonomous relaunch occurred. Human retry is next; successful startup,
+gameplay, movies and save/reload remain unverified. No full-game claim is made.
 
 ## Input and preparation
 

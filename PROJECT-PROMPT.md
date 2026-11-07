@@ -48,10 +48,12 @@ apps, assets or saves. Coordinate deployment through current Cinder rules; the
 owner removed the blanket closed-game gate for this fresh USB install. Never
 force-close, reboot or launch a game; human owns gameplay qualification.
 
-Current delivery: the private r4 native EBOOT app, selected private artwork,
+Current delivery: the private native EBOOT app, selected private artwork,
 metadata, runtime tables/fonts and notices plus the owned ISO have been delivered
 to their exact USB0 paths. The real renderer, controller, audio, media and
-generated game code link and convert; no console boot is established.
+generated game code link and convert. The first human launch exposed a missing
+loader companion; the coherent r5 recipe now requires it and its notices, and
+the additive USB repair is complete. Human retry is next; boot is not established.
 Keep native save writes disabled until the actual provider contract is qualified.
 Review the unintegrated read-only anchor candidate with Cinder. Before any USB
 installation, resolve title collisions, present the exact candidate/backup plan
