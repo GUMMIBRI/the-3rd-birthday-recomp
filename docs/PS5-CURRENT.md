@@ -147,6 +147,13 @@ enabling writes.
 
 ## Next work and ownership
 
+Next-successor data policy is queued in `PS5-DATA-LAYOUT.md`: retain the stable
+`third-birthday-data` name, ship it inside the app, and support optional whole-root
+read selection on available numeric USB mounts or `/data`. Current code still
+uses the explicit external USB0 ISO path; no discovery/migration support is
+claimed. Active saves and the current deployment are preserved. No build or
+console write was made for this policy.
+
 This chat owns integration and Git. Cinder provides project guidance/review and
 exclusively dispatches any separate helper account. Native read-only anchor work
 and local delivery preparation are isolated worker tasks; check actual current
