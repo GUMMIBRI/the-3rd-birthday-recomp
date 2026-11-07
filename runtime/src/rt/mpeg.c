@@ -19,12 +19,15 @@ int  sr_h264_create(void);
 void sr_h264_destroy(int id);
 void sr_h264_feed(int id, const uint8_t *data, uint32_t len);
 int  sr_h264_frame(int id, int eos, uint8_t *dst, int frameWidth, int pixelMode);
+#ifdef SR_NATIVE_GAME
+int sr_h264_finished(int id);
+#endif
 #endif
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <windows.h>
+#include "platform/clock.h"
 #include "at3_bridge.h"
 
 /* ---- constants (PPSSPP sceMpeg.cpp/.h) ---- */
@@ -284,12 +287,21 @@ uint32_t mpeg_query_mem_size(uint32_t outAddr) {
     return 0;
 }
 uint32_t mpeg_ringbuffer_query_mem_size(uint32_t packets) {
+#ifdef SR_NATIVE_GAME
+    if ((uint64_t)packets * (104u + 2048u) > INT32_MAX) return SCE_MPEG_ERROR_INVALID_VALUE;
+#endif
     return packets * (104u + 2048u);     /* PPSSPP __MpegRingbufferQueryMemSize */
 }
 
 uint32_t mpeg_ringbuffer_construct(uint32_t ring, uint32_t numPackets, uint32_t data, uint32_t size,
                                    uint32_t cbAddr, uint32_t cbArg) {
     if (!ring) return 0x80020003u;
+#ifdef SR_NATIVE_GAME
+    if ((ring & 3u) || ring < 0x08000000u || (uint64_t)ring + 48 > 0x0a000000u ||
+        !numPackets || (uint64_t)numPackets * 2152u > size ||
+        data < 0x08000000u || (uint64_t)data + (uint64_t)numPackets * 2048u > 0x0a000000u)
+        return SCE_MPEG_ERROR_INVALID_VALUE;
+#endif
     if ((int32_t)size < 0) return SCE_MPEG_ERROR_NO_MEMORY;
     if (mpeg_ringbuffer_query_mem_size(numPackets) > size && numPackets < 0x00100000u)
         return SCE_MPEG_ERROR_NO_MEMORY;
@@ -334,7 +346,7 @@ uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_
     ctx->used = 1; ctx->handle = h; ctx->ringAddr = ringAddr;
     ctx->defaultFrameWidth = (int)frameWidth; ctx->pixelMode = 3; ctx->isAnalyzed = 0;
     ctx->h264 = -1;
-    ctx->startMs = GetTickCount64();
+    ctx->startMs = (uint64_t)(sr_clock_ticks() / (sr_clock_frequency() / 1000));
     { extern int g_mpeg_sessions, g_mpeg_live; g_mpeg_sessions++; g_mpeg_live++; }
     return 0;
 }
@@ -345,7 +357,7 @@ uint32_t mpeg_delete(uint32_t mpegAddr) {
     { extern int g_mpeg_live; if (g_mpeg_live > 0) g_mpeg_live--; }
     fprintf(stderr, "MPEG session end: %.1f s, fed %u/%u packets, decodes %lld (h264 frames %d), "
             "videoPts %lld, videoEnd %d\n",
-            (GetTickCount64() - ctx->startMs) / 1000.0, ctx->fedPackets, ctx->totalPackets,
+            ((uint64_t)(sr_clock_ticks() / (sr_clock_frequency() / 1000)) - ctx->startMs) / 1000.0, ctx->fedPackets, ctx->totalPackets,
             (long long)(ctx->videoPts / 3003), ctx->h264Frames, (long long)ctx->videoPts, ctx->videoEnd);
 #ifdef SR_SDL3VK
     if (ctx->h264 >= 0) { sr_h264_destroy(ctx->h264); ctx->h264 = -1; }
@@ -448,9 +460,16 @@ int g_mpeg_avc_ring_empty = 0;   /* last GetAvcAu found the ring empty (hle.c pi
 uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, uint32_t available) {
     g_mpeg_put++;
     if (!ring) return 0;
+#ifdef SR_NATIVE_GAME
+    if ((ring & 3u) || ring < 0x08000000u || (uint64_t)ring + 48 > 0x0a000000u)
+        return SCE_MPEG_ERROR_INVALID_VALUE;
+#endif
     if ((int32_t)numPackets <= 0) return 0;
     uint32_t avail = rb_get(ring, RB_packetsAvail);
     uint32_t total = rb_get(ring, RB_packets);
+#ifdef SR_NATIVE_GAME
+    if (!total || avail > total) return SCE_MPEG_ERROR_INVALID_VALUE;
+#endif
     uint32_t mpegAddr = rb_get(ring, RB_mpeg);
     Mpeg *ctx = mpegAddr ? mpeg_find(mpegAddr) : 0;
     uint32_t addWanted = numPackets;
@@ -461,6 +480,12 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
     uint32_t cb = rb_get(ring, RB_callback_addr);
     uint32_t cbArg = rb_get(ring, RB_callback_args);
     uint32_t packetSize = rb_get(ring, RB_packetSize);
+#ifdef SR_NATIVE_GAME
+    if (!cb || !sr_lookup(cb) || packetSize != 2048 || rb_get(ring, RB_data) < 0x08000000u ||
+        (uint64_t)rb_get(ring, RB_data) + (uint64_t)total * packetSize > 0x0a000000u ||
+        (uint64_t)rb_get(ring, RB_data) + (uint64_t)total * packetSize != rb_get(ring, RB_dataUpperBound))
+        return SCE_MPEG_ERROR_INVALID_VALUE;
+#endif
     if (!packetSize) packetSize = 2048;
     if (cb && !sr_lookup(cb)) {
         static int warned = 0;
@@ -480,17 +505,33 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
         if (chunk == 0) break;
 
         uint32_t dst = rb_get(ring, RB_data) + writePos * packetSize;
+#ifdef SR_NATIVE_GAME
+        if (dst < 0x08000000u || (uint64_t)dst + (uint64_t)chunk * packetSize > 0x0a000000u)
+            return SCE_MPEG_ERROR_INVALID_VALUE;
+#endif
         uint32_t got = cb ? call_guest3(s, cb, dst, chunk, cbArg) : chunk;
         if ((int32_t)got < 0) {
             if (addedTotal == 0) return got;
             break;
         }
-        if (got > chunk) got = chunk;
+        if (got > chunk) {
+#ifdef SR_NATIVE_GAME
+            return SCE_MPEG_ERROR_INVALID_VALUE;
+#else
+            got = chunk;
+#endif
+        }
         if (got == 0) break;
 
 #ifdef SR_SDL3VK
         if (ctx && got) {
             if (!ctx->h264Init) { ctx->h264Init = 1; ctx->h264 = sr_h264_create(); }
+#ifdef SR_NATIVE_GAME
+            if (ctx->h264 < 0) {
+                fprintf(stderr, "native movie: H264 decoder creation failed\n");
+                return SCE_MPEG_ERROR_NO_MEMORY;
+            }
+#endif
             if (ctx->h264 >= 0)
                 sr_h264_feed(ctx->h264, (const uint8_t *)SR_HOST(dst), got * packetSize);
         }
@@ -539,8 +580,18 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     /* Real end-of-stream: the game has fed the whole movie (fedPackets >= totalPackets) and the
      * ring has drained. This mirrors PPSSPP's mediaengine->IsVideoEnd() without ffmpeg -- the movie
      * runs for the full file then ends, instead of stopping at the (segment-only) header timestamp. */
+#ifdef SR_NATIVE_GAME
+    int canDrain = 0;
+    if (ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets && ctx->h264Init && ctx->h264 >= 0) {
+        int finished = sr_h264_finished(ctx->h264);
+        if (finished < 0) return SCE_MPEG_ERROR_INVALID_VALUE;
+        ctx->videoEnd = finished != 0;
+        canDrain = !finished;
+    }
+#else
     if (ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets && rb_get(ring, RB_packetsAvail) == 0)
         ctx->videoEnd = 1;
+#endif
     if (getenv("SR_MPEGSTAT")) {
         static unsigned long n = 0;
         if ((++n % 300) == 0) {
@@ -556,7 +607,13 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
         }
     }
     g_mpeg_avc_ring_empty = 0;
-    if (rb_get(ring, RB_packetsRead) == 0 || rb_get(ring, RB_packetsAvail) == 0) {
+    if (rb_get(ring, RB_packetsRead) == 0 ||
+#ifdef SR_NATIVE_GAME
+        (rb_get(ring, RB_packetsAvail) == 0 && !canDrain) || ctx->videoEnd
+#else
+        rb_get(ring, RB_packetsAvail) == 0
+#endif
+    ) {
         g_mpeg_nodata++;
         g_mpeg_avc_ring_empty = 1;
         au_write_pts(auAddr, 0, -1); au_write_pts(auAddr, 8, -1);
@@ -601,8 +658,13 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     /* End of stream for audio too (PPSSPP: IsAudioEnd -> ERROR_MPEG_NO_DATA). Reporting audio
      * as always available kept the movie's AudioOutput thread alive after the video ended, so
      * the player never finished and the game froze on the last frame of the opening. */
+#ifdef SR_NATIVE_GAME
+    int completeAudioCode;
+    if (!ctx->audio || !audio_next_frame(ctx->audio, &completeAudioCode)) {
+#else
     if (ctx->videoEnd || (ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets &&
                           rb_get(ring, RB_packetsAvail) == 0)) {
+#endif
         au_write_pts(auAddr, 0, -1); au_write_pts(auAddr, 8, -1);
         return SCE_MPEG_ERROR_NO_DATA;
     }
@@ -646,7 +708,9 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
         frameWidth = ctx->defaultFrameWidth ? (uint32_t)ctx->defaultFrameWidth : 512u;
     uint32_t buffer = bufferAddr ? MEM_R32(bufferAddr) : 0;
 
+#ifndef SR_NATIVE_GAME
     ctx->videoPts += videoTimestampStep;
+#endif
     /* Report "a frame was produced" (1) every decode; the game keeps feeding/decoding until it has
      * read the whole file, then stops on its own. */
     int gotFrame = 0;
@@ -657,6 +721,18 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
                                  (int)frameWidth, ctx->pixelMode);
         if (gotFrame > 0) ctx->h264Frames++;
     }
+#endif
+#ifdef SR_NATIVE_GAME
+    if (gotFrame < 0 || !ctx->h264Init || ctx->h264 < 0 || !buffer) {
+        if (initAddr) MEM_W32(initAddr, 0);
+        fprintf(stderr, "native movie: frame decoding failed\n");
+        return SCE_MPEG_ERROR_INVALID_VALUE;
+    }
+    if (!gotFrame) {
+        if (initAddr) MEM_W32(initAddr, 0);
+        return SCE_MPEG_ERROR_NO_DATA;
+    }
+    ctx->videoPts += videoTimestampStep;
 #endif
     /* No decoder (or it hasn't produced its first frame yet): clear the destination instead of
      * leaving stale contents, which otherwise appears as moving black bands over uninitialised
@@ -685,15 +761,28 @@ uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAd
     if (!ctx) return (uint32_t)-1;
     if (!bufferAddr || !sr_inrange(bufferAddr) || !sr_inrange(bufferAddr + MPEG_ATRAC_ES_OUTPUT_SIZE - 1))
         return (uint32_t)-1;
+#ifdef SR_NATIVE_GAME
+    if (bufferAddr < 0x08000000u || (uint64_t)bufferAddr + MPEG_ATRAC_ES_OUTPUT_SIZE > 0x0a000000u)
+        return SCE_MPEG_ERROR_INVALID_VALUE;
+#endif
     memset(SR_HOST(bufferAddr), 0, MPEG_ATRAC_ES_OUTPUT_SIZE);
     AudioDemux *a = ctx->audio;
     int code1 = 0, frameSize = audio_next_frame(a, &code1);
+#ifdef SR_NATIVE_GAME
+    if (!frameSize) return SCE_MPEG_ERROR_NO_DATA;
+#endif
     if (frameSize) {
         if (!a->dec) a->dec = at3dec_create(AT3_CODEC_AT3PLUS, code1 == 0x24 ? 1 : 2, frameSize - 8, NULL, 0);
+#ifdef SR_NATIVE_GAME
+        if (!a->dec) return SCE_MPEG_ERROR_NO_MEMORY;
+#endif
         int n = 0;
         if (at3dec_decode(a->dec, a->es + 8, frameSize - 8, 2, (int16_t *)SR_HOST(bufferAddr), &n) < 0) {
             static int nerr = 0;
             if (nerr++ < 10) fprintf(stderr, "MPEG audio: ATRAC3+ frame %lu failed to decode (%d bytes)\n", a->frames, frameSize);
+#ifdef SR_NATIVE_GAME
+            return SCE_MPEG_ERROR_INVALID_VALUE;
+#endif
         }
         /* Pop the frame: normally the next header sits right after it (MpegDemux getNextHeaderPosition). */
         buf_consume(a->es, &a->esLen, frameSize);
@@ -704,6 +793,10 @@ uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAd
     return 0;
 }
 uint32_t mpeg_avc_decode_stop(uint32_t mpegAddr, uint32_t frameWidth, uint32_t bufferAddr, uint32_t statusAddr) {
+#ifdef SR_NATIVE_GAME
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx || ctx->h264 < 0 || sr_h264_finished(ctx->h264) != 1) return SCE_MPEG_ERROR_NO_DATA;
+#endif
     (void)frameWidth; (void)bufferAddr;
     if (statusAddr) MEM_W32(statusAddr, 0);   /* no frames left */
     (void)mpegAddr; return 0;

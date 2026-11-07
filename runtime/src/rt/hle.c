@@ -41,6 +41,7 @@
 #define _mkdir(path) mkdir(path, 0770)
 #endif
 #include "platform/clock.h"
+#include "platform/storage_gate.h"
 
 uint32_t sr_last_nid = 0;
 
@@ -970,6 +971,7 @@ static uint32_t h_IoOpen(CpuState *s) {
     char path[256];
     guest_cstr(A0, path, sizeof(path));
     uint32_t flags = A1;
+    if ((flags & (2u | 0x100u | 0x200u | 0x400u)) && !sr_storage_require_write()) return 0x8001000du;
     if (getenv("SR_IOLOG")) fprintf(stderr, "Open(%s) flags=0x%x\n", path, flags);
     if (getenv("SR_PATHHEX")) {
         int bad = 0; for (int i = 0; path[i]; i++) if ((unsigned char)path[i] < 0x20 || (unsigned char)path[i] >= 0x7f) bad = 1;
@@ -1026,6 +1028,7 @@ from_iso:
 }
 /* sceIoMkdir / sceIoRmdir / sceIoRename on the memory stick (other devices: implicit dirs). */
 static uint32_t h_IoMkdir(CpuState *s) {
+    if (!sr_storage_require_write()) return 0x8001000du;
     char g[256], hp[512]; guest_cstr(A0, g, sizeof(g));
     if (!sr_ms_path(g, hp, sizeof(hp))) return 0;
     if (getenv("SR_IOLOG")) fprintf(stderr, "Mkdir(%s)\n", g);
@@ -1039,6 +1042,7 @@ static uint32_t h_IoMkdir(CpuState *s) {
 #endif   /* EEXIST / ENOENT */
 }
 static uint32_t h_IoRmdir(CpuState *s) {
+    if (!sr_storage_require_write()) return 0x8001000du;
     char g[256], hp[512]; guest_cstr(A0, g, sizeof(g));
     if (!sr_ms_path(g, hp, sizeof(hp))) return 0;
     if (getenv("SR_IOLOG")) fprintf(stderr, "Rmdir(%s)\n", g);
@@ -1052,6 +1056,7 @@ static uint32_t h_IoRmdir(CpuState *s) {
 #endif     /* ENOTEMPTY / ENOENT */
 }
 static uint32_t h_IoRename(CpuState *s) {
+    if (!sr_storage_require_write()) return 0x8001000du;
     char a[256], b[256], ha[512], hb[512];
     guest_cstr(A0, a, sizeof(a)); guest_cstr(A1, b, sizeof(b));
     if (!strchr(b, ':')) {   /* a bare new name: same directory as the old one */
@@ -1070,6 +1075,7 @@ static uint32_t h_IoRename(CpuState *s) {
 uint32_t sr_h_IoMkdir(CpuState *s) { return h_IoMkdir(s); }
 uint32_t sr_h_IoRmdir(CpuState *s) { return h_IoRmdir(s); }
 static uint32_t h_IoWrite(CpuState *s) {
+    if (!sr_storage_require_write()) return 0x8001000du;
     /* a0=fd, a1=src, a2=count. Returns bytes written. */
     uint32_t fd = A0, src = A1, count = A2;
     if (fd < 2) return count;                        /* stdout/stderr: pretend-consumed */
@@ -1540,7 +1546,10 @@ void sr_ctrl_sample(void) {
     if (gui_on()) gui_analog(&lx, &ly);
     s_ctrl_ring[s_ctrl_w].btn = h_CtrlButtons() | intro_skip_tick();
     if (g_script_lx >= 0) { lx = (uint8_t)g_script_lx; ly = (uint8_t)g_script_ly; }
+#ifndef SR_NATIVE_GAME
+    /* Optional Windows localhost test injection; native input comes from SDL. */
     { extern void ctrlsrv_apply(uint32_t *, uint8_t *, uint8_t *); ctrlsrv_apply(&s_ctrl_ring[s_ctrl_w].btn, &lx, &ly); }
+#endif
     {   /* twin-stick camera: turn Aya toward the camera before an aim (twinstick.c) */
         extern void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly);
         sr_twinstick_filter(&s_ctrl_ring[s_ctrl_w].btn, &lx, &ly);

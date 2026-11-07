@@ -7,6 +7,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
+#include "platform/storage_gate.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -628,6 +629,7 @@ static uint32_t h_IoDclose(CpuState *s) {
 #endif
 #ifdef _WIN32
 static uint32_t h_IoRemove(CpuState *s) {
+    if (!sr_storage_require_write()) return 0x8001000du;
     char g[256], hp[512];
     guest_str(A0, g, sizeof(g));
     sr_host_path(g, hp, sizeof(hp));
@@ -636,6 +638,7 @@ static uint32_t h_IoRemove(CpuState *s) {
 }
 #else
 static uint32_t h_IoRemove(CpuState *s) {
+    if (!sr_storage_require_write()) return 0x8001000du;
     char guest[256], path[512];
     if (!guest_str(A0, guest, sizeof(guest))) return 0x80010024u;
     sr_host_path(guest, path, sizeof(path));

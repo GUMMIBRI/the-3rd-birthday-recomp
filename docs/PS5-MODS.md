@@ -109,3 +109,230 @@ with their own documented provenance.
 
 No runtime, console, inference, external repository mutation or game-data operation
 was performed for this assessment. Only this report was written.
+
+## Follow-up implementation receipt: ISO host I/O
+
+The lead subsequently assigned this worker only `iso.c` and
+`platform/iso_file.h`. These now use checked 64-bit Windows/POSIX seek/tell
+operations, with 64-bit `off_t` required at compile time. Wrapper/LBA addition is
+widened before arithmetic; wrapper detection no longer truncates through Windows
+`long`. Sector lookup rejects failed seeks/short reads, and raw reads report host
+I/O failures while retaining short EOF byte counts. Directory buffer allocation
+and rounded-size overflow are checked. The existing game-facing interface and
+ISO name/extent lookup semantics are unchanged.
+
+Windows, Linux-reference and actual `x86_64-sie-ps5` ISO translation units compiled
+with `-Wall -Wextra -Werror`. An isolated synthetic Windows check under
+`build/mods` passed an 8 GiB seek/tell without extending the file, case-insensitive
+ISO lookup, exact data read, short EOF, missing file and negative seek failure.
+No game input, full application link, PS5 execution or gameplay test was used.
+This is not a complete malformed-ISO parser audit; directory record-length/name
+validation remains a separate pre-existing concern.
+
+## Follow-up implementation receipt: directory host service
+
+`platform/host_dir.h` and `.c` provide opaque open/next/close enumeration and a
+bounded root-plus-leaf join. Windows uses actual `FindFirstFileA`/`FindNextFileA`
+metadata; POSIX uses the selected SDK's `opendir`/`readdir`/`lstat` definitions.
+Missing, permission denial, non-directory, invalid input, excessive path length,
+memory failure and other I/O errors are distinct; native error codes are retained.
+Empty directories end normally. Entries expose regular/directory/link/other kinds,
+so consumers can explicitly select regular files. Final-component symlink/reparse
+roots are rejected, including a trailing-separator alias; links among enumerated
+leaves are classified without following them. No recursion or mount mutation.
+
+Joined names reject traversal components, separators, alternate-stream delimiters,
+wildcards, controls and trailing dot/space aliases; joins never truncate. Root
+anchor capability/ancestor validation remains the caller's responsibility. This is
+not a filesystem sandbox or a race-free open-by-handle facility: consumers must not
+assume that a classified path cannot be replaced before a later open.
+
+Windows executable checks passed file/directory classification, empty enumeration,
+missing versus non-directory distinction, native missing error retention, invalid
+and traversal paths, and too-small output buffers. Actual PS5 and Linux-reference
+translation units compiled with warnings treated as errors. All synthetic inputs
+and check outputs are isolated under `build/mods`; no console execution or runtime
+mod/texture call-site changes were performed by this worker.
+
+## Follow-up implementation receipt: PPSSPP texture pack portability
+
+`texpack_ppsspp.c` now enumerates through `host_dir`, distinguishes absent pack
+roots from denied/broken roots, uses SDL case-insensitive comparisons, checks
+allocations and constructs bounded relative image paths component by component.
+Regular-file manifests and images are required; nested pack images remain valid
+while absolute, traversal, stream aliases and symlink components are rejected.
+Manifest I/O and overlong-line failures disable the incomplete pack instead of
+silently using a truncated filename. Reinitialization releases prior state.
+INI-over-root-filename priority and the existing PPSSPP hash/key/wildcard algorithms
+are retained. Root image discovery does not re-enumerate once per image.
+
+The official xxHash v0.8.3 header and BSD2 license are pinned at commit
+`e626a72bc2321cd320e953a0ccf1584cad60f363`; exact source/hash receipts are in
+`runtime/third_party/xxhash/PROVENANCE.md`. Header-only inclusion avoids requiring
+a Windows xxHash library on PS5.
+
+Actual PS5 and Windows translation units compiled with pinned SDL headers and
+warnings treated as errors. An isolated synthetic Windows check passed manifest
+discovery, INI precedence, empty suppression entries, nested image resolution,
+traversal/absolute-path rejection, state reset and official empty-input xxHash
+vectors. These checks do not decode game textures or prove PS5 texture upload.
+
+## Independent review: native texture integration, PNG and SDL audio
+
+Read-only source review of the parent's first `ge_gpu.c` host-directory integration,
+`platform/png.c` and `platform/audio_sdl.c` found two concrete dump-path blockers,
+reported to the lead for correction:
+
+- `tp_init` returns after root-path truncation without clearing `s_tp_dump`.
+  `tp_replace` can subsequently save under the truncated root. Invalid root setup
+  must disable dump and clear the path before returning.
+- Dump `mkdir` accepts `EEXIST` without establishing a real, non-link directory;
+  `stat` follows output links. In particular a dangling output symlink can yield
+  `ENOENT`, after which PNG `fopen("wb")` follows it to a target outside the dump
+  directory. Validate the dump anchor and use a no-follow/exclusive creation policy;
+  do not treat a followed missing target as an absent safe leaf.
+
+No additional concrete overflow or ownership defect was found in the reviewed PNG
+implementation: input is capped at 64 MiB, image dimensions at 4096, output/converted
+pixel size arithmetic is bounded, owned allocations and streams are released, and
+write/flush/close failure is reflected in the result. Path ownership is a separate
+caller obligation. This does not constitute malformed-image fuzz qualification.
+
+The SDL audio mixer preserves the eight-channel accumulator model; producer and
+consumer cursors/ring state share a mutex, writes are clamped to ring capacity,
+volume products and the eight-channel sum fit int32, and callback destruction
+precedes mutex destruction. The pinned SDL header defines callback demand in
+unconverted input bytes, matching the four-byte stereo-frame calculation. No
+additional concrete source defect was found in this bounded review. The backend
+is unbound/unrun: device buffering, actual audibility, timing and shutdown behavior
+still need integration and appropriate target evidence. Use remains one producer
+thread plus SDL callback; it is not a general concurrent init/shutdown API.
+
+This review edited only this report and performed no runtime, inference, console
+or Git actions. The two findings above describe the source at review time; later
+lead correction receipts supersede their pending status.
+
+## Native GUI implementation receipt
+
+`platform/gui_sdl.c` adapts the real upstream SDL frontend without its Win32/GDI
+fallback. SDL/Vulkan and GPU GE initialization must both succeed before `gui_on`
+becomes true; failure prints the current SDL error and exits unsuccessfully.
+Presentation uses actual `gegpu_present` images, with bounded PSP framebuffer
+unpacking for CPU-written movie/menu frames in 5650/5551/4444/8888 formats. Physical
+VRAM/RAM span, alignment, stride and format checks precede pixel reads.
+
+The upstream controls remapping/options, cheats, camera/free aim, resolution,
+aspect/interpolation, glow, FPS, intro-skip, fullscreen, screenshot-request and quit
+menu paths remain connected to their real SDL/runtime APIs. Save/load list dialogs
+retain selection/cancel and input-release blocking. Native monotonic timing replaces
+QPC/Sleep; scheduler-paced vblanks avoid duplicate pacing, fast-forward retains
+the upstream presentation thinning, and held interpolation frames retain their
+vblank phases/adaptive fallback. Mod/cheat hooks remain once per emulated vblank.
+Modal CPU-frame presentation refreshes pixel conversion instead of reusing stale
+converted pixels. No diagnostic server button injection or Windows update service
+is linked by this frontend; the updater menu is omitted rather than fabricated.
+
+Actual PS5 and Windows-reference translation units compiled with warnings treated
+as errors and generated address metadata from `versions/ULUS10567.toml`. The new
+frontend is not yet a linked/running game. Its real twinstick/cheats/mod services,
+renderer, scheduler, game memory and save dialog caller must be included by the
+native app build. Screenshot capability still follows the renderer's explicit
+availability policy. No game data, fixture, emulator, console launch or runtime
+qualification was used to establish this source receipt.
+
+## Savedata native implementation receipt
+
+`savedata.c` now retains its actual PSP savedata modes, slot dialog/SFO metadata,
+list/file queries, load binding value and existing PSP result-code families while
+using a native POSIX adapter in place of Win32 file/directory/time calls. The PC
+backend remains available. Directory enumeration uses `host_dir`; file timestamps
+come from the selected SDK's real `struct stat`/`timespec` and local-time APIs.
+
+Native operation requires an explicit existing `SR_MEMSTICK` root. On PS5 it must
+be under a numeric `/mnt/usbN/homebrew/<app>` path. No cwd fallback or creation of
+mount/app/root ancestors occurs. Relative descendants are validated as components
+and traversed with descriptor-relative `openat(O_DIRECTORY|O_NOFOLLOW)`; actual
+files use no-follow opens, exclusive temporary creation, checked flush/close,
+file fsync, atomic rename and parent-directory fsync. Deletion is anchored through
+`unlinkat`. This source uses public declared POSIX APIs, not invented directory,
+stat or thread layouts and not raw syscalls. Actual PS5 providers, ABI behavior and
+selected app-anchor admission remain unqualified until the native app link and
+Cinder's provider review; host compilation does not establish console write safety.
+
+Backups copy actual existing files before an overwrite. Native timestamp/serial
+names avoid reusing a possibly incomplete backup, copy errors stop the overwrite,
+and existing retention policy stays outside `PSP/SAVEDATA`. Filename traversal and
+invalid guest data-buffer spans are rejected. Metadata/blob write errors propagate
+instead of returning save success. SFO length/key/data bounds are checked before
+copying, and absent/invalid data does not get replaced with an empty template.
+The inherited virtual 512-MiB memory-stick capacity query is unchanged; it is not
+a measurement of free USB space.
+
+Actual PS5, Windows and Linux-reference translation units compiled with warnings
+treated as errors. Isolated synthetic Windows checks exercised real save, overwrite,
+backup contents, load, SFO title round-trip, PSP bind value, slot listing, delete,
+missing-data result and traversal rejection. Only new synthetic files under
+`build/mods` were touched. Native POSIX runtime, original-game save compatibility,
+console write services and human save/reload gameplay remain untested.
+
+## Independent native H.264/MPEG source review
+
+Read-only review of `platform/h264_ffmpeg.c` and the `SR_NATIVE_GAME` MPEG path
+identified these concrete issues for lead correction:
+
+1. Native movie completion still follows empty compressed ring bytes. FFmpeg can
+   retain delayed/reordered frames after accepting the last compressed packet;
+   `sr_h264_pending_bytes` does not count these. `mpeg_get_avc_au` can set video end
+   and stop further decode calls before receive/drain reaches `AVERROR_EOF`.
+   Native end-of-video needs explicit decoder drain/EOF state, not compressed-byte
+   emptiness. This can truncate actual movie endings.
+2. Pixel output bounds cover the entire host arena, including the non-framebuffer
+   gap between PSP VRAM and RAM and the upper reserved arena region. Validate an
+   entire actual PSP VRAM or RAM span consistently with the native GUI rather than
+   only checking host allocation containment.
+3. Ring fill passes `SR_HOST(RB_data + writePos * packetSize)` and a uint32 product
+   `got * packetSize` directly to native demux/decoder feeds. Existing constructor
+   arithmetic also accepts certain oversized/wrapping ring requests. Check ring
+   counts and full RAM spans using widened arithmetic before host reads/callbacks.
+   This is inherited upstream input validation debt, not proof of an observed game
+   failure, but the new native adapter does not itself close that boundary.
+
+The adapter's own PS/ES/parser/packet input budgets are bounded; incomplete PS
+packets are retained. Pending packets survive `avcodec_send_packet(EAGAIN)`;
+parser output is copied into an owned packet before ES storage can move. The
+receive-before-send order and parser flush/drain control are coherent in isolation,
+subject to the integration EOF issue above. Decoder thread_count=1/thread_type=0
+matches the dependency's intended nonthreaded build. Context, parser, frame,
+packet, scale and input allocations have corresponding destruction paths.
+
+PSP pixel channel ordering matches the existing frontend formats. Timestamps
+retain the upstream fixed-step/firstTimestamp model (now advanced only for a real
+decoded frame); actual PES/FFmpeg frame PTS are not yet used, so accurate variable
+rate or reordered timestamp semantics are not established. No original movie,
+runtime, console, inference or Git operation was used by this review. Findings
+describe the source at review time; subsequent lead fixes require their own
+correction receipts.
+
+### Finite re-review after media corrections
+
+The lead's corrections are present: native video completion now consults
+`sr_h264_finished` (set only on codec `AVERROR_EOF`), end-of-input allows further
+decode/drain calls despite an empty compressed ring, pixel output admits only full
+2-MiB VRAM or 32-MiB RAM spans, and native ring construction/fill checks widened
+packet arithmetic, callback presence and complete RAM spans.
+
+Two remaining findings were reported:
+
+- ATRAC AU availability still stops on video end or empty H.264-based ring
+  accounting even when actual demuxed audio ES frames remain. Native audio end
+  needs complete-input plus actual audio-frame exhaustion; video compressed-byte
+  emptiness does not establish that the audio stream has ended.
+- At native H.264 end-of-input, a retained incomplete recognized PS/PES element
+  can be discarded while parser/codec drain reaches clean EOF. Distinguish the
+  short resync-padding tail from an incomplete declared element and report
+  malformed/truncated input. This is an input-validation issue; no actual game
+  movie failure was observed.
+
+No further concrete send/receive EAGAIN, packet lifetime or bounded decode-loop
+error was found in this pass. No runtime/console/inference/Git action occurred;
+source correction review alone does not establish movie playback.

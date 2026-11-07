@@ -1,3 +1,4 @@
+#include "platform/storage_gate.h"
 /* Cheats (Esc menu > Cheats), saved in cheats.cfg next to the executable.
  *
  * Two kinds, both from the community CWCheat database for the US release (PPSSPP's cheat.db):
@@ -46,6 +47,7 @@ static void load(void) {
     fclose(f);
 }
 static void save(void) {
+    if (!sr_storage_require_write()) return;
     FILE *f = fopen(cfg_path(), "w");
     if (!f) return;
     fprintf(f, "# cheats (Esc menu > Cheats): 1 = on\n");

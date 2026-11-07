@@ -2,6 +2,7 @@
  * PNG only; stb retains its own MIT license in the unmodified headers.
  */
 #include "png.h"
+#include "storage_gate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -50,6 +51,7 @@ static void write_bytes(void *context, void *data, int size) {
     if (size < 0 || (!out->failed && fwrite(data, 1, (size_t)size, out->file) != (size_t)size)) out->failed = 1;
 }
 int sr_png_save(const char *path, const uint32_t *pixels, int width, int height, int bgra) {
+    if (!sr_storage_require_write()) return 0;
     PngOutput out;
     uint32_t *converted = NULL;
     int encoded;

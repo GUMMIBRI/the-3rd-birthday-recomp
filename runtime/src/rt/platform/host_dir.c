@@ -10,6 +10,8 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(SR_PS5_DIRECTORY_PROVIDER)
+#include "native_directory_ps5.h"
 #else
 #include <dirent.h>
 #include <errno.h>
@@ -23,6 +25,8 @@ struct SrHostDir {
     HANDLE handle;
     WIN32_FIND_DATAA data;
     int pending;
+#elif defined(SR_PS5_DIRECTORY_PROVIDER)
+    void *handle;
 #else
     DIR *handle;
 #endif
@@ -84,6 +88,72 @@ int sr_dir_join(const char *root, const char *leaf, char *out, size_t capacity,
     return result(error, SR_DIR_OK, 0);
 }
 
+#if defined(SR_PS5_DIRECTORY_PROVIDER)
+static int native_error(SrDirError *error, int code) {
+    SrDirStatus status;
+    switch (sr_native_directory_error_class(code)) {
+    case SR_NATIVE_ERROR_OK: status = SR_DIR_OK; break;
+    case SR_NATIVE_ERROR_MISSING: status = SR_DIR_MISSING; break;
+    case SR_NATIVE_ERROR_DENIED: status = SR_DIR_DENIED; break;
+    case SR_NATIVE_ERROR_NOT_DIRECTORY: status = SR_DIR_NOT_DIRECTORY; break;
+    case SR_NATIVE_ERROR_TOO_LONG: status = SR_DIR_TOO_LONG; break;
+    case SR_NATIVE_ERROR_NOMEM: status = SR_DIR_NOMEM; break;
+    case SR_NATIVE_ERROR_UNSUPPORTED: status = SR_DIR_UNSUPPORTED; break;
+    case SR_NATIVE_ERROR_INVALID: status = SR_DIR_INVALID; break;
+    default: status = SR_DIR_IO; break;
+    }
+    return result(error, status, (uint32_t)code);
+}
+int sr_dir_open(const char *root, SrHostDir **out, SrDirError *error) {
+    SrHostDir *dir;
+    int code = 0;
+    size_t length;
+    if (!out) return result(error, SR_DIR_INVALID, 0);
+    *out = NULL;
+    if (!root_valid(root)) return result(error, SR_DIR_INVALID, 0);
+    length = strlen(root);
+    if (length >= SR_DIR_PATH_CAPACITY) return result(error, SR_DIR_TOO_LONG, 0);
+    dir = calloc(1, sizeof(*dir));
+    if (!dir) return result(error, SR_DIR_NOMEM, 0);
+    while (length > 1 && separator(root[length - 1])) --length;
+    memcpy(dir->root, root, length); dir->root[length] = 0;
+    dir->handle = sr_native_directory_open(dir->root, &code);
+    if (!dir->handle) { free(dir); return native_error(error, code); }
+    *out = dir;
+    return result(error, SR_DIR_OK, 0);
+}
+int sr_dir_next(SrHostDir *dir, SrDirEntry *entry, SrDirError *error) {
+    SrNativeDirectoryInfo info;
+    char name[256];
+    int code = 0, status;
+    if (!dir || !entry) return result(error, SR_DIR_INVALID, 0);
+    memset(entry, 0, sizeof(*entry));
+    if (dir->ended) return result(error, SR_DIR_OK, 0);
+    status = sr_native_directory_next(dir->handle, name, &info, &code);
+    if (status <= 0) {
+        dir->ended = 1;
+        return status < 0 ? native_error(error, code) : result(error, SR_DIR_OK, 0);
+    }
+    status = sr_dir_join(dir->root, name, entry->path, sizeof(entry->path), error);
+    if (status != SR_DIR_OK) return status;
+    memcpy(entry->name, name, strlen(name) + 1);
+    switch (info.kind) {
+    case SR_NATIVE_REGULAR: entry->kind = SR_DIR_REGULAR; break;
+    case SR_NATIVE_DIRECTORY: entry->kind = SR_DIR_DIRECTORY; break;
+    case SR_NATIVE_SYMLINK: entry->kind = SR_DIR_SYMLINK; break;
+    default: entry->kind = SR_DIR_OTHER; break;
+    }
+    result(error, SR_DIR_OK, 0);
+    return 1;
+}
+int sr_dir_close(SrHostDir *dir, SrDirError *error) {
+    int code = 0, status;
+    if (!dir) return result(error, SR_DIR_INVALID, 0);
+    status = sr_native_directory_close(dir->handle, &code);
+    free(dir);
+    return status < 0 ? native_error(error, code) : result(error, SR_DIR_OK, 0);
+}
+#else
 #ifdef _WIN32
 static int native_error(SrDirError *error, DWORD code) {
     SrDirStatus status = SR_DIR_IO;
@@ -221,3 +291,5 @@ int sr_dir_close(SrHostDir *dir, SrDirError *error) {
     if (status == SR_DIR_OK) result(error, SR_DIR_OK, 0);
     return status;
 }
+
+#endif /* SR_PS5_DIRECTORY_PROVIDER */

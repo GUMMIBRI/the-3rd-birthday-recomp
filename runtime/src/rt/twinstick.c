@@ -1,3 +1,4 @@
+#include "platform/storage_gate.h"
 /* Twin-stick camera: the PC right stick orbits the gameplay camera.
  *
  * The game has several camera objects with a common layout (from a base pointer B: eye at
@@ -44,6 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "platform/clock.h"
 
 float g_script_rx = 0.0f, g_script_ry = 0.0f;   /* SR_PADSCRIPT right-stick override */
 
@@ -122,6 +124,7 @@ static uint32_t s_aya = 0;                           /* Aya's object (hook playe
 static struct { uint32_t base; float eye[3]; } s_last[MAX_CAMS];
 
 static void cfg_save(void) {
+    if (!sr_storage_require_write()) return;
     FILE *f = fopen(CFG_FILE, "w");
     if (!f) return;
     fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\nrecenter_delay_still=%.2f\nstyle=%d\nfree_aim=%d\n",
@@ -190,8 +193,7 @@ void sr_twinstick_set(int id, float v) {
 }
 
 static double now_s(void) {
-    struct timespec ts; timespec_get(&ts, TIME_UTC);
-    return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
+    return (double)sr_clock_ticks() / (double)sr_clock_frequency();
 }
 
 /* Once per controller read: integrate the right stick into the orbit offset. */

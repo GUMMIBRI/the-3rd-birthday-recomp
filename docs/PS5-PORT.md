@@ -1,7 +1,10 @@
 # PS5 port development
 
-Status: native scheduler/context source compiles for PS5, **not a linked PS5
-executable or playable port**. Resumption prompt: `../PROJECT-PROMPT.md`.
+Current status: a private native game application and `eboot.bin` have been
+built from the tester's verified disc. Static imports, instruction, conversion,
+relocation and SELF checks pass. **Console boot and playability are untested.**
+Native writes are explicitly disabled pending filesystem-provider qualification.
+Current handoff: `PS5-CURRENT.md`. Resumption prompt: `../PROJECT-PROMPT.md`.
 
 Fork: https://github.com/GUMMIBRI/the-3rd-birthday-recomp
 

@@ -14,6 +14,8 @@
 #include <string.h>
 #define PSP_W 480
 #define PSP_H 272
+/* Native frontend owns draw diagnostics; the optional Windows test server is absent. */
+volatile int g_drawlog_on;
 static int s_on, s_sdl3;
 static uint32_t *s_px;
 static uint32_t s_buttons;

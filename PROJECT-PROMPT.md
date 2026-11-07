@@ -1,4 +1,11 @@
-# The 3rd Birthday PS5 project prompt
+# Parasite Eve 3 native PS5 project prompt
+
+Current source/artifact handoff: `docs/PS5-CURRENT.md`; read it first. Owner says
+continue implementation and Cinder coordination beyond object compilation, keep
+pushing code, and stop goal work only on owner/Cinder instruction (tool and
+capacity boundaries still apply). Deliver native `eboot.bin`; console writes
+must target USB only. Display name Parasite Eve 3, original game The 3rd Birthday;
+do not rename the repository or imply official affiliation.
 
 Build a native playable PS5 homebrew port of The 3rd Birthday from the existing
 statically recompiled native PC project. Do not build or package an emulator,

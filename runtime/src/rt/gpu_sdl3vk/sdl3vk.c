@@ -1,3 +1,4 @@
+#include "../platform/storage_gate.h"
 /* SDL3 + Vulkan presentation backend, Phase 0 (see README.md for the full renderer plan).
  *
  * Scope of this phase: a real Vulkan swapchain fed by the (proven-correct) software GE.
@@ -198,6 +199,7 @@ static const char *ctl_path(void) {   /* SR_CONTROLS_CFG: test runs keep the pla
     return e && *e ? e : "controls.cfg";
 }
 static void bind_save(void) {
+    if (!sr_storage_require_write()) return;
     FILE *f = fopen(ctl_path(), "w");
     if (!f) return;
     fprintf(f, "# action = key, key | gamepad button   (keys may be Mouse Left / Middle / Right / 4 / 5;\n"
@@ -879,6 +881,7 @@ static void shot_record(VkImage src, int w, int h) {
 /* After the present's fence: write the PNG. */
 #ifdef _WIN32
 static void shot_save(void) {
+    if (!sr_storage_require_write()) { s_shot_pending = 0; return; }
     if (!s_shot_pending) return;
     s_shot_pending = 0;
     static ULONG_PTR token = 0;
@@ -919,6 +922,7 @@ static void shot_save(void) {
 
 #else
 static void shot_save(void) {
+    if (!sr_storage_require_write()) { s_shot_pending = 0; return; }
     if (!s_shot_pending) return;
     s_shot_pending = 0;
     char path[SR_DIR_PATH_CAPACITY], leaf[192];
@@ -980,6 +984,7 @@ int sdl3vk_cfg_get(const char *key, int def) {
 }
 
 void sdl3vk_cfg_set(const char *key, int v) {
+    if (!sr_storage_require_write()) return;
     char keys[GCFG_MAX][40]; int vals[GCFG_MAX];
     int n = gcfg_load(keys, vals), i;
     for (i = 0; i < n; i++) if (!strcmp(keys[i], key)) break;

@@ -16,14 +16,21 @@ try {
     $flags = @('--target=x86_64-sie-ps5', "--sysroot=$sdk", '-isystem', "$sdk/include",
         '-I', "$prepared/gen", '-Iruntime/src/rt', '-std=gnu11', '-O1',
         '-foptimize-sibling-calls', '-fPIC', '-fno-stack-protector', '-fno-plt',
-        '-ffunction-sections', '-fdata-sections')
+        '-ffunction-sections', '-fdata-sections', '-Wno-unreachable-code-generic-assoc')
     # The verifier requires this list to match the manifest exactly; no stale
     # translated chunks or Windows DLL glue can be silently selected.
     $sources = @(Get-ChildItem "$prepared/gen/recomp_*.c" | Sort-Object Name | ForEach-Object {$_.FullName})
     $sources += "$prepared/game_image.c"
+    $index = 0
     foreach ($source in $sources) {
-        & "$base/deps/llvm/bin/clang.exe" @flags -c $source -o "$objects/$([IO.Path]::GetFileNameWithoutExtension($source)).o"
-        if ($LASTEXITCODE) { throw "Translated game compilation failed: $source" }
+        $name = [IO.Path]::GetFileNameWithoutExtension($source)
+        & "$base/deps/llvm/bin/clang.exe" @flags -c $source -o "$objects/$name.o" *> "$objects/$name.log"
+        if ($LASTEXITCODE) {
+            Get-Content "$objects/$name.log" -Tail 20
+            throw "Translated game compilation failed: $name"
+        }
+        ++$index
+        Write-Output "Compiled static game unit $index/$($sources.Count)"
     }
     & python tools/verify_ps5_prepared.py $prepared
     if ($LASTEXITCODE) { throw 'Prepared game changed during compilation' }
