@@ -78,10 +78,17 @@ int main(int argc, char **argv) {
 #else
     const char *resource_root = argv[1];
 #endif
-    if (sr_dir_open(resource_root, &anchor, &error) != 0) {
+    uint32_t anchor_step = 0;
+#ifdef SR_PS5_DIRECTORY_PROVIDER
+    const int anchor_result = sr_dir_open_detailed(resource_root, &anchor, &error,
+                                                   &anchor_step);
+#else
+    const int anchor_result = sr_dir_open(resource_root, &anchor, &error);
+#endif
+    if (anchor_result != 0) {
         fprintf(stderr, "native game: app anchor %s unavailable: %d/%u\n",
                 resource_root, error.status, error.native_code);
-        return 23;
+        return anchor_step ? (int)anchor_step : 23;
     }
     /* Keep the authenticated root handle live for the application's lifetime.
      * This is not a claim of write confinement; writes are separately gated.

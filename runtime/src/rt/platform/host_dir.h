@@ -39,6 +39,11 @@ typedef struct SrDirEntry {
  * zero indicates a validation failure. Entry order is host filesystem order.
  */
 int sr_dir_open(const char *root, SrHostDir **out, SrDirError *error);
+#ifdef SR_PS5_DIRECTORY_PROVIDER
+/* A zero step on failure means the adapter was never reached. */
+int sr_dir_open_detailed(const char *root, SrHostDir **out, SrDirError *error,
+                         uint32_t *step);
+#endif
 /* 1 = entry, 0 = end (including an empty directory), negative = SrDirStatus. */
 int sr_dir_next(SrHostDir *dir, SrDirEntry *entry, SrDirError *error);
 int sr_dir_close(SrHostDir *dir, SrDirError *error);

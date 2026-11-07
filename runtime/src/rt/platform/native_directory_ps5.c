@@ -78,29 +78,37 @@ static int leaf_valid(const char *name, size_t length) {
     }
     return name[length - 1] != '.' && name[length - 1] != ' ';
 }
-void *sr_native_directory_open(const char *path, int *error) {
+void *sr_native_directory_open(const char *path, int *error, uint32_t *step) {
     char normalized[PROVIDER_PATH_CAPACITY];
     struct stat before, opened;
     NativeDirectory *directory;
     int code = copy_path(path, normalized);
     if (error) *error = 0;
+    if (step) *step = 40;
     if (code) { fail(error, code); return NULL; }
+    if (step) *step = 41;
     if (lstat(normalized, &before) != 0) { fail(error, errno); return NULL; }
+    if (step) *step = 42;
     if (S_ISLNK(before.st_mode)) { fail(error, ELOOP); return NULL; }
     if (!S_ISDIR(before.st_mode)) { fail(error, ENOTDIR); return NULL; }
+    if (step) *step = 43;
     directory = calloc(1, sizeof(*directory));
     if (!directory) { fail(error, ENOMEM); return NULL; }
+    if (step) *step = 44;
     directory->stream = ps5_opendir(normalized);
     if (!directory->stream) { code = errno; free(directory); fail(error, code); return NULL; }
+    if (step) *step = 45;
     int fd = ps5_dirfd(directory->stream);
     if (fd < 0 || fstat(fd, &opened) != 0) {
         code = errno; ps5_closedir(directory->stream); free(directory); fail(error, code); return NULL;
     }
+    if (step) *step = 46;
     if (opened.st_dev != before.st_dev || opened.st_ino != before.st_ino || !S_ISDIR(opened.st_mode)) {
         ps5_closedir(directory->stream); free(directory); fail(error, EIO); return NULL;
     }
     directory->device = opened.st_dev; directory->inode = opened.st_ino;
     memcpy(directory->path, normalized, strlen(normalized) + 1);
+    if (step) *step = 0;
     return directory;
 }
 int sr_native_directory_next(void *handle, char name[256], SrNativeDirectoryInfo *info, int *error) {

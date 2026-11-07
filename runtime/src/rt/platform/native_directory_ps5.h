@@ -37,7 +37,9 @@ uint32_t sr_native_directory_error_class(int native_code);
  * next: 1 entry / 0 end / -1 failure. Names are NUL terminated, at most255 bytes.
  * Caller gives name[256], info storage; all are reset on end/failure.
  */
-void *sr_native_directory_open(const char *path, int *error);
+/* Optional step receives the failing operation, zero on success. Values
+ * 40–46 are reserved startup exit codes (see docs/PS5-CURRENT.md). */
+void *sr_native_directory_open(const char *path, int *error, uint32_t *step);
 int sr_native_directory_next(void *handle, char name[256], SrNativeDirectoryInfo *info, int *error);
 int sr_native_directory_close(void *handle, int *error);
 int sr_native_stat_nofollow(const char *path, SrNativeDirectoryInfo *info, int *error);

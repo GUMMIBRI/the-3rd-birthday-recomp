@@ -199,3 +199,18 @@ directory anchor, 24 working directory, 25 path length, 26 environment setup,
 ISO initialization. These codes identify the branch even if termination again
 reports SIGSYS. The existing CRT exit path is retained because the exact earlier
 startup cause and a replacement termination contract are unverified.
+
+The pending directory diagnostic candidate refines stage 23 when the PS5
+adapter is reached. Exit 40 means path normalization, 41 lstat, 42 root
+type validation, 43 adapter allocation, 44 opendir, 45 descriptor lookup
+or fstat, and 46 identity comparison. Stage 23 remains the fallback for
+failures before the adapter. Existing callers retain the original status
+and native error contract. The installed /app0 EBOOT predates these codes.
+
+The USB app-folder ISO test uses the selected absolute path
+`/mnt/usb0/homebrew/PPSA77025/ULUS10567.iso`. The earlier ISO copy is preserved.
+The latest captured matching SIGSYS preceded this path-only upload. The
+`/app0` and app-folder ISO binaries share the same CRT return address, so
+that address alone cannot distinguish them. Bind the next launch using the
+installed file receipt, console time, ShadowMount title and PID, and the
+matching kernel exit record. The kernel log renders exit codes in hex.

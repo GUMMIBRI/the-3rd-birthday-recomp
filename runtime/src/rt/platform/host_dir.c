@@ -104,10 +104,12 @@ static int native_error(SrDirError *error, int code) {
     }
     return result(error, status, (uint32_t)code);
 }
-int sr_dir_open(const char *root, SrHostDir **out, SrDirError *error) {
+int sr_dir_open_detailed(const char *root, SrHostDir **out, SrDirError *error,
+                         uint32_t *step) {
     SrHostDir *dir;
     int code = 0;
     size_t length;
+    if (step) *step = 0;
     if (!out) return result(error, SR_DIR_INVALID, 0);
     *out = NULL;
     if (!root_valid(root)) return result(error, SR_DIR_INVALID, 0);
@@ -117,10 +119,13 @@ int sr_dir_open(const char *root, SrHostDir **out, SrDirError *error) {
     if (!dir) return result(error, SR_DIR_NOMEM, 0);
     while (length > 1 && separator(root[length - 1])) --length;
     memcpy(dir->root, root, length); dir->root[length] = 0;
-    dir->handle = sr_native_directory_open(dir->root, &code);
+    dir->handle = sr_native_directory_open(dir->root, &code, step);
     if (!dir->handle) { free(dir); return native_error(error, code); }
     *out = dir;
     return result(error, SR_DIR_OK, 0);
+}
+int sr_dir_open(const char *root, SrHostDir **out, SrDirError *error) {
+    return sr_dir_open_detailed(root, out, error, NULL);
 }
 int sr_dir_next(SrHostDir *dir, SrDirEntry *entry, SrDirError *error) {
     SrNativeDirectoryInfo info;
