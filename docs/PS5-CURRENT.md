@@ -18,23 +18,31 @@ The resulting `eboot.bin` is under
 contains game-derived code/data; never upload it or its fingerprints to GitHub.
 The original tester-supplied ISO, SMB source and earlier artifacts are preserved.
 
-The selected private app folder is `build/private-delivery-r3/PPSA77025`, with
-36 hash-bound files: EBOOT, metadata, original mandatory 512x512 icon, fonts,
-VFPU tables and notices. Packaging gates pass; console delivery, launcher
-discovery and boot remain pending. Earlier local candidates are preserved.
+The delivered private app folder is `build/private-delivery-r4/PPSA77025`, with
+36 hash-bound files: EBOOT, metadata, Cinder's selected private icon/backgrounds,
+fonts, VFPU tables and notices. Earlier local candidates are preserved.
 See `PS5-INSTALL-PLAN.md` for Cinder's reviewed recoverable USB file-delivery
 sequence. Atomic whole-directory activation is not required or claimed.
 
 The owner authorized the fresh USB0 app/owned-ISO install through Cinder, then
 removed the blanket all-games-closed condition. No automatic launch, force-close
-or reboot is permitted. Transfer is held for Cinder's exact final private artwork
-selection and a fresh r4 package; existing art previews are not selected.
+or reboot is permitted. Cinder selected the exact final artwork receipt; no
+unselected preview or private artwork was published.
 
 Actual read-only preflight completed: exact app destination absent, 59 app
 identities read in the bounded selected-root scan, with one unrelated incomplete
 packaging container explicitly excluded. ShadowMount's 132-title snapshot has
 no matching title/content ID. This is local collision evidence with documented
-coverage limits, not a global ID reservation. No console writes have occurred.
+coverage limits, not a global ID reservation.
+
+USB file delivery is complete: all 36 app files under
+`/mnt/usb0/homebrew/PPSA77025` and the owned ISO under
+`/mnt/usb0/third-birthday-data/ULUS10567.iso`. The private receipt is
+`build/private-usb-install-r4.json`. Every file has a matching local streaming
+SHA256, completed upload and verified remote regular-file type/size; only small
+final metadata was read back for a remote hash. No large-file remote hash is
+claimed. Final file inventory passed. The upload slot was released to Cinder,
+Forge and Raven; no remaining PE3 transfer is active.
 
 Actual static checks passed:
 
@@ -49,7 +57,7 @@ Actual static checks passed:
   relocations and 25 PLT relocations match the independently checked model.
 - SELF inspection reports valid integrity. Corrupted verifier fixtures reject.
 
-There has been **no console launch, installation, boot observation, gameplay,
+There has been **no console launch, confirmed launcher registration, boot observation, gameplay,
 movie playback or save/reload test**. No full-game completion claim is made.
 
 ## Input and preparation
@@ -109,10 +117,9 @@ exclusively dispatches any separate helper account. Native read-only anchor work
 and local delivery preparation are isolated worker tasks; check actual current
 worker status before dispatching or editing owned files.
 
-Continue native provider/ABI work and finish reviewed USB transfer tooling,
-and obtain the human's actual boot/control/movie/combat evidence after an approved
-USB-only installation. The owner authorized the fresh USB0 app/ISO install and
-removed the blanket closed-game gate through Cinder. Hold transfer for Cinder's
-selected artwork and refreshed package; no autonomous launch. Keep other project apps/saves
+Next obtain the human's actual launcher-discovery/boot/control/movie/combat
+observations and work concrete failures with Cinder. Native provider/ABI
+qualification remains necessary before enabling saves. USB file delivery is
+complete; no autonomous launch or repeated upload. Keep other project apps/saves
 untouched. Qwen remains blocked by the previously recorded normal-path tool
 rejection; no alternate invocation or policy change is permitted.
