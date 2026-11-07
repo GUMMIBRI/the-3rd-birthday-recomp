@@ -53,6 +53,15 @@ unchanged; no automatic launch occurred. The original r4 package remains intact;
 the console icon now reflects this separately recorded overlay. Future updates
 must use that actual current identity rather than assume the original r4 icon.
 
+A subsequent owner-authorized background-only overlay adds three muted red
+mitochondrial shapes beside the regular PE logo. Both selected DDS backgrounds
+were delivered; private receipt: `build/private-background-update-r1/RESULT.json`.
+Original local r4 backgrounds are backed up. Evidence is exact local SHA256,
+completed uploads and remote regular-file type/size, without full background
+readback or remote hash claims. The current icon and parameter remote hashes,
+and protected EBOOT/ISO metadata remained unchanged. No automatic launch occurred;
+the write slot was released. Preserve both overlay receipts for future updates.
+
 Actual static checks passed:
 
 - One verified preparation cohort compiled; source/image/module GP/base/entry
