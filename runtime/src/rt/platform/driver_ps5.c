@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
     char *selected_argv[] = {"native-game", SR_PS5_APP_ROOT, SR_PS5_ISO_PATH, NULL};
     if (argc <= 1) { argc = 3; argv = selected_argv; }
     if (argc == 3 && strcmp(argv[1], SR_PS5_APP_ROOT)) {
-        fprintf(stderr, "native game: selected application root cannot be changed\n"); return 2;
+        fprintf(stderr, "native game: selected application root cannot be changed\n"); return 20;
     }
 #endif
     /* Paths supplied by the eventual title launcher. No implicit data scan or
@@ -66,25 +66,25 @@ int main(int argc, char **argv) {
     CpuState cpu;
     if (argc != 3 || !usb_path(argv[1], 1) || !usb_path(argv[2], 0)) {
         fprintf(stderr, "usage: native-game <existing /mnt/usbN/homebrew/app> <owned ISO path on USB>\n");
-        return 2;
+        return 21;
     }
     if (base < 0x08000000u || base >= 0x0c000000u || entry < base || entry >= 0x0c000000u || (entry & 3u)) {
-        fprintf(stderr, "native game: invalid prepared image address range\n"); return 2;
+        fprintf(stderr, "native game: invalid prepared image address range\n"); return 22;
     }
     if (sr_dir_open(argv[1], &anchor, &error) != 0) {
-        fprintf(stderr, "native game: app anchor unavailable: %d/%u\n", error.status, error.native_code); return 2;
+        fprintf(stderr, "native game: app anchor unavailable: %d/%u\n", error.status, error.native_code); return 23;
     }
     /* Keep the authenticated root handle live for the application's lifetime.
      * This is not a claim of write confinement; writes are separately gated.
      */
     if (chdir(argv[1]) != 0) {
         sr_dir_close(anchor, &error);
-        fprintf(stderr, "native game: cannot select app-owned working directory\n"); return 2;
+        fprintf(stderr, "native game: cannot select app-owned working directory\n"); return 24;
     }
     if (snprintf(memstick, sizeof(memstick), "%s/user/memstick", argv[1]) >= (int)sizeof(memstick) ||
         snprintf(scratch, sizeof(scratch), "%s/user/fs", argv[1]) >= (int)sizeof(scratch) ||
         snprintf(mods, sizeof(mods), "%s/user", argv[1]) >= (int)sizeof(mods)) {
-        fprintf(stderr, "native game: app-owned path exceeds limit\n"); return 2;
+        fprintf(stderr, "native game: app-owned path exceeds limit\n"); return 25;
     }
     if (setenv("SR_MEMSTICK", memstick, 1) != 0 ||
         setenv("SR_FSDIR", scratch, 1) != 0 ||
@@ -93,19 +93,23 @@ int main(int argc, char **argv) {
         setenv("XDG_CACHE_HOME", mods, 1) != 0 ||
         setenv("TMPDIR", mods, 1) != 0 ||
         setenv("MESA_SHADER_CACHE_DISABLE", "true", 1) != 0 ||
-        setenv("PSP_ISO", argv[2], 1) != 0 || iso_init() != 0) {
-        fprintf(stderr, "native game: original disc could not be opened\n"); return 2;
+        setenv("PSP_ISO", argv[2], 1) != 0) {
+        fprintf(stderr, "native game: startup environment setup failed: %d\n", errno);
+        return 26;
+    }
+    if (iso_init() != 0) {
+        fprintf(stderr, "native game: original disc could not be opened\n"); return 30;
     }
     if (!sr_native_game.image || !sr_native_game.image_size ||
         sr_native_game.image_size > 0x0c000000u - base ||
         entry - base >= sr_native_game.image_size ||
         (sr_native_game.module_gp && (sr_native_game.module_gp < 0x08000000u || sr_native_game.module_gp >= 0x0c000000u))) {
-        fprintf(stderr, "native game: invalid compiled image profile\n"); return 2;
+        fprintf(stderr, "native game: invalid compiled image profile\n"); return 27;
     }
     sr_mem_init();
     sr_load_segment(base, sr_native_game.image, sr_native_game.image_size);
     sr_register_all();
-    if (!sr_lookup(entry)) { fprintf(stderr, "native game: missing translated entry 0x%08x\n", entry); return 2; }
+    if (!sr_lookup(entry)) { fprintf(stderr, "native game: missing translated entry 0x%08x\n", entry); return 28; }
     g_patch_flags = sr_patch_on;
     memset(&cpu, 0, sizeof(cpu));
     cpu.vfpuCtrl[0] = cpu.vfpuCtrl[1] = 0xe4;
@@ -114,7 +118,7 @@ int main(int argc, char **argv) {
     /* Upstream preparation uses zero module arguments; scheduler allocates SP/k0. */
     cpu.r[4] = cpu.r[5] = cpu.r[29] = cpu.r[26] = 0;
     gui_init("Parasite Eve 3 — The 3rd Birthday native PS5 development");
-    if (!gui_on()) { fprintf(stderr, "native game: renderer initialization failed\n"); return 2; }
+    if (!gui_on()) { fprintf(stderr, "native game: renderer initialization failed\n"); return 29; }
     sr_hle_init();
     sched_init(&cpu);
     sched_run(entry, 0, 0);

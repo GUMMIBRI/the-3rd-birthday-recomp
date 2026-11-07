@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$PlatformRoot,
     [Parameter(Mandatory=$true)][string]$PreparedDirectory,
-    [string]$ConversionName = 'converted-r1'
+    [string]$ConversionName = 'converted-r1',
+    [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$LinkName = 'native-link'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -10,7 +11,7 @@ try {
     if ($ConversionName -notmatch '^[A-Za-z0-9_-]+$') { throw 'Invalid conversion folder name' }
     $base = (Resolve-Path -LiteralPath $PlatformRoot).Path
     $prepared = (Resolve-Path -LiteralPath $PreparedDirectory).Path
-    $link = "$prepared/native-link"
+    $link = "$prepared/$LinkName"
     $elf = "$link/third-birthday-native.elf"
     $audit = Get-Content "$link/GAME-AUDIT.json" -Raw | ConvertFrom-Json
     if (!$audit.passed -or $audit.sha256 -ne (Get-FileHash $elf).Hash.ToLowerInvariant()) {

@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory=$true)][string]$PlatformRoot,
     [Parameter(Mandatory=$true)][string]$PreparedDirectory,
     [Parameter(Mandatory=$true)][string]$ConsoleIsoPath,
-    [string]$AppRoot = '/mnt/usb0/homebrew/PPSA77025'
+    [string]$AppRoot = '/mnt/usb0/homebrew/PPSA77025',
+    [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$LinkName = 'native-link'
 )
 # Private real-game native application link. Never installs, starts or publishes.
 $ErrorActionPreference = 'Stop'
@@ -25,7 +26,7 @@ try {
     foreach ($object in $gameObjects) {
         if ((Get-FileHash $object.Path).Hash -ne $object.Hash) { throw 'Translated object changed since compilation' }
     }
-    $out = "$prepared/native-link"
+    $out = "$prepared/$LinkName"
     New-Item -ItemType Directory -Force $out | Out-Null
     # Selected paths are a private installation plan, not observed console files.
     $config = "#define SR_PS5_APP_ROOT `"$AppRoot`"`n#define SR_PS5_ISO_PATH `"$ConsoleIsoPath`"`n"

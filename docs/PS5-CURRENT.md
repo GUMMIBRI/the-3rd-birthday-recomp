@@ -191,3 +191,11 @@ qualification remains necessary before enabling saves. USB file delivery is
 complete; no autonomous launch or repeated upload. Keep other project apps/saves
 untouched. Qwen remains blocked by the previously recorded normal-path tool
 rejection; no alternate invocation or policy change is permitted.
+
+The startup diagnostic successor assigns distinct kernel-visible exit codes:
+20 app-root override, 21 arguments/path syntax, 22 image address range, 23 app
+directory anchor, 24 working directory, 25 path length, 26 environment setup,
+27 image profile, 28 missing translated entry, 29 renderer readiness, and 30
+ISO initialization. These codes identify the branch even if termination again
+reports SIGSYS. The existing CRT exit path is retained because the exact earlier
+startup cause and a replacement termination contract are unverified.
