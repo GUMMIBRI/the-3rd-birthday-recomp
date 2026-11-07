@@ -111,8 +111,15 @@ changed zero files: r5 metadata serialization order differed from the deployed
 r4 bytes despite equal JSON values. The correction used the actual immutable
 deployed metadata baseline. Both receipts remain private and preserved.
 
-No autonomous relaunch occurred. Human retry is next; successful startup,
-gameplay, movies and save/reload remain unverified. No full-game claim is made.
+The subsequent human retry passed the missing-module barrier, then failed on
+startup. Matched logs record `exit(2)` before `SIGSYS`; symbolization of the actual
+loaded main image maps the return address to the CRT call of `exit` after `main`
+returned. The original early error is not captured, because multiple startup
+branches share status 2. The finite read-only report and logs are private under
+`build/private-sigsys-r1/`. Next review a minimal stage/error diagnostic and the
+native return path with Cinder. No speculative provider change, new build, upload,
+autonomous launch or repeat human test was requested. Successful startup,
+gameplay, movies and save/reload remain unverified.
 
 ## Input and preparation
 
