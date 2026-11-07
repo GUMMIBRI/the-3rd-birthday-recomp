@@ -44,6 +44,15 @@ final metadata was read back for a remote hash. No large-file remote hash is
 claimed. Final file inventory passed. The upload slot was released to Cinder,
 Forge and Raven; no remaining PE3 transfer is active.
 
+The owner then requested an icon-only small-title correction to `[parasite 3ve]`.
+That scoped update is complete, with actual old remote bytes backed up locally,
+old identity checked against r4, and the selected new small icon verified by
+remote SHA256. Private receipt: `build/private-icon-update-r1/RESULT.json`.
+Protected EBOOT/background/ISO/parameter metadata and the parameter hash stayed
+unchanged; no automatic launch occurred. The original r4 package remains intact;
+the console icon now reflects this separately recorded overlay. Future updates
+must use that actual current identity rather than assume the original r4 icon.
+
 Actual static checks passed:
 
 - One verified preparation cohort compiled; source/image/module GP/base/entry
