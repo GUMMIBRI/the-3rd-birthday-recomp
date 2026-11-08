@@ -482,6 +482,10 @@ typedef struct {
 static Label  s_toast, s_fps;
 static Uint64 s_toast_until = 0;             /* SDL_GetTicks() deadline */
 static int    s_show_fps = -1;               /* graphics.cfg show_fps (Esc menu) */
+#ifdef SR_NATIVE_GAME
+static _Atomic uint64_t s_videoout_shown;
+static uint64_t s_fps_shown_start;
+#endif
 static Uint64 s_fps_t0 = 0; static int s_fps_shown = 0, s_fps_game = 0, s_fps_v = 0, s_fps_gv = 0;
 
 void sdl3vk_toast(const char *msg, int ms) {
@@ -600,15 +604,37 @@ void sdl3vk_set_glow(int on) { s_glow = on; sdl3vk_cfg_set("glow", on); }
 static void toast_record(VkImage dst) {
     int dh = (int)s_swap_ext.height, dw = (int)s_swap_ext.width;
     const Uint64 now = SDL_GetTicks();
+#ifdef SR_NATIVE_GAME
+    const uint64_t shown = atomic_load(&s_videoout_shown);
+#else
     s_fps_shown++;
-    if (!s_fps_t0) s_fps_t0 = now;
+#endif
+    if (!s_fps_t0) {
+        s_fps_t0 = now;
+#ifdef SR_NATIVE_GAME
+        s_fps_shown_start = shown;
+#endif
+    }
     if (now - s_fps_t0 >= 1000) {
+#ifdef SR_NATIVE_GAME
+        /* FIFO VideoOut markers advance once per flip. Sample the completed
+         * marker rather than counting attempts to record the overlay. */
+        const uint64_t elapsed = now - s_fps_t0;
+        const uint64_t flips = shown >= s_fps_shown_start ? shown - s_fps_shown_start : 0;
+        s_fps_v = (int)((flips * 1000 + elapsed / 2) / elapsed);
+        s_fps_shown_start = shown;
+#else
         s_fps_v = (int)((s_fps_shown * 1000 + 500) / (now - s_fps_t0));
+#endif
         s_fps_gv = (int)((s_fps_game * 1000 + 500) / (now - s_fps_t0));
         s_fps_shown = s_fps_game = 0; s_fps_t0 = now;
     }
-    if (sdl3vk_show_fps() && s_fps_v) {
+    if (sdl3vk_show_fps() && s_fps_t0 && (s_fps_v || s_fps_gv)) {
+#ifdef SR_NATIVE_GAME
+        snprintf(s_fps.msg, sizeof(s_fps.msg), "%d display FPS   %d game FPS", s_fps_v, s_fps_gv);
+#else
         snprintf(s_fps.msg, sizeof(s_fps.msg), "%d FPS   (game %d)", s_fps_v, s_fps_gv);
+#endif
         int px = dh / 40; if (px < 12) px = 12; if (px > 40) px = 40;
         if (label_render(&s_fps, px, 0) && s_fps.w + px < dw && s_fps.h + px < dh)
             label_copy(&s_fps, dst, px / 2, px / 2);
@@ -1517,6 +1543,8 @@ int __wrap_sceVideoOutGetFlipStatus(int32_t handle, uint64_t *status) {
     int result = __real_sceVideoOutGetFlipStatus(handle, status);
     const int64_t argument = atomic_load(&s_first_flip_argument);
     /* Word 3 is the shown argument in the retained RADV VideoOut ABI. */
+    if (result == 0)
+        atomic_store(&s_videoout_shown, status[3]);
     if (result == 0 && argument > 0 && status[3] == (uint64_t)argument &&
         !atomic_exchange(&s_first_display_recorded, true)) {
         fprintf(stderr, "first-frame: VideoOut reports displayed argument=%lld\n",

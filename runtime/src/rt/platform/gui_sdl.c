@@ -289,7 +289,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
         snprintf(buf[M_INTRO], 96, "Skip intro at start:  %s", sdl3vk_cfg_get("skip_intro", 0) ? "On" : "Off");
         snprintf(buf[M_GLOW], 96, "Glow effect (bloom):  %s", sdl3vk_glow() ? "On (original)" : "Off");
-        snprintf(buf[M_SHOWFPS], 96, "Show FPS counter:  %s", sdl3vk_show_fps() ? "On" : "Off");
+        snprintf(buf[M_SHOWFPS], 96, "Display and game FPS:  %s", sdl3vk_show_fps() ? "On" : "Off");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
         snprintf(buf[M_SHOT], 96, "Save screenshot  (F12)");
         snprintf(buf[M_QUIT], 96, "Quit game");
