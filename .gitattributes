@@ -3,3 +3,9 @@
 runtime/third_party/stb/* text eol=lf
 runtime/third_party/xxhash/* text eol=lf
 runtime/third_party/sdl_debug_font/* text eol=lf
+
+# Source archives exclude optional artwork, gameplay captures and save data.
+/docs/screenshots export-ignore
+/runtime/assets/ps5/icon0.png export-ignore
+/unlocks export-ignore
+/runtime/SDL3.dll export-ignore
