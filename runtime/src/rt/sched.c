@@ -807,11 +807,16 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         memcpy(s_cpu, &t->saved, sizeof(CpuState));   /* load this thread's registers */
         sr_timeslice = TIMESLICE;          /* a fresh slice for this run (the counter is global) */
         if (!t->started) {
-            t->started = 1;
-            /* Guest calls become native C calls, so a deep guest call chain needs a deep host
-             * stack. Reserve a large fiber stack (committed on demand) to match. */
-            t->fiber = sr_fiber_create((size_t)1 << 18, (size_t)64 << 20, fiber_proc, t);
+#ifdef SR_PS5_DIRECT_STACKS
+            /* 128 eagerly backed host stacks fit the 512 MiB budget.
+             * Guest thread stacks are sized separately. */
+            const size_t reserve = (size_t)4 << 20;
+#else
+            const size_t reserve = (size_t)64 << 20;
+#endif
+            t->fiber = sr_fiber_create((size_t)1 << 18, reserve, fiber_proc, t);
             if (!t->fiber) { fprintf(stderr, "scheduler: host stack allocation failed\n"); abort(); }
+            t->started = 1;
         }
         const uint64_t run0 = qpc_us();
         s_run0 = run0;

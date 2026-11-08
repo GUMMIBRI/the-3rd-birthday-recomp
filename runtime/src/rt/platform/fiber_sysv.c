@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <string.h>
 #ifdef SR_PS5_DIRECT_STACKS
+#include <stdio.h>
 #include <ps5platform/shm.h>
 #endif
 
@@ -43,6 +44,14 @@ static unsigned children;
 #define SR_SYSV_STACK_BUDGET (512u * 1024u * 1024u)
 #endif
 static size_t protected_stack_bytes;
+#ifdef SR_PS5_DIRECT_STACKS
+static void *stack_failure(const char *stage, int error, size_t bytes) {
+    fprintf(stderr, "fiber: %s error=%#x active=%u backed=%zu requested=%zu\n",
+            stage, (unsigned)error, children, protected_stack_bytes, bytes);
+    fflush(stderr);
+    return NULL;
+}
+#endif
 static void require_owner(void) {
     if (!root || !pthread_equal(owner, pthread_self())) abort();
 }
@@ -79,24 +88,42 @@ void *sr_fiber_create(size_t commit, size_t reserve, void (*entry)(void *), void
     if (page > 1024 * 1024 || (page & (page - 1))) return NULL;
     usable = (reserve + page - 1) & ~(page - 1);
     if (usable > SR_SYSV_STACK_BUDGET ||
-        protected_stack_bytes > SR_SYSV_STACK_BUDGET - usable) return NULL;
+        protected_stack_bytes > SR_SYSV_STACK_BUDGET - usable) {
+#ifdef SR_PS5_DIRECT_STACKS
+        return stack_failure("budget", 0, usable);
+#else
+        return NULL;
+#endif
+    }
     fiber = calloc(1, sizeof(*fiber));
-    if (!fiber) return NULL;
+    if (!fiber) {
+#ifdef SR_PS5_DIRECT_STACKS
+        return stack_failure("metadata", 0, usable);
+#else
+        return NULL;
+#endif
+    }
     fiber->mapping_size = usable + 2 * page;
     fiber->stack_size = usable;
 #ifdef SR_PS5_DIRECT_STACKS
-    if (ps5_vrange_reserve(fiber->mapping_size, NULL, page, &fiber->mapping) != 0) {
-        free(fiber); return NULL;
+    int rc = ps5_vrange_reserve(fiber->mapping_size, NULL, page, &fiber->mapping);
+    if (rc != 0) {
+        free(fiber);
+        return stack_failure("reserve", rc, usable);
     }
-    if (ps5_shm_create(usable, &fiber->backing) != 0) {
+    rc = ps5_shm_create(usable, &fiber->backing);
+    if (rc != 0) {
         if (ps5_vrange_release(fiber->mapping, fiber->mapping_size) != 0) abort();
-        free(fiber); return NULL;
+        free(fiber);
+        return stack_failure("backing", rc, usable);
     }
-    if (ps5_shm_map(&fiber->backing, 0, usable, (char *)fiber->mapping + page,
-                    PS5_SHM_READ | PS5_SHM_WRITE, PS5_SHM_FIXED, &fiber->view) != 0) {
+    rc = ps5_shm_map(&fiber->backing, 0, usable, (char *)fiber->mapping + page,
+                     PS5_SHM_READ | PS5_SHM_WRITE, PS5_SHM_FIXED, &fiber->view);
+    if (rc != 0) {
         ps5_shm_destroy(&fiber->backing);
         if (ps5_vrange_release(fiber->mapping, fiber->mapping_size) != 0) abort();
-        free(fiber); return NULL;
+        free(fiber);
+        return stack_failure("map", rc, usable);
     }
 #else
     fiber->mapping = mmap(NULL, fiber->mapping_size, PROT_NONE,

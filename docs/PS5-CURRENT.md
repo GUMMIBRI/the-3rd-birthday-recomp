@@ -251,3 +251,5 @@ visibility on the console is unverified. The candidate does not enable
 runtime storage writes.
 
 The splash handoff candidate calls sceSystemServiceHideSplashScreen() on the render thread after Vulkan accepts presentation and VideoOut has accepted a game flip. It retries on up to three eligible frames. The native and converted executable audits passed. Splash dismissal and timing still need an owner launch.
+
+Task 137 dismissed the shell splash before PID 356 aborted in the scheduler's host stack allocation path. The next candidate keeps that handoff and uses guarded 4 MiB direct-backed PS5 host stacks. This permits all 128 scheduler slots within the existing 512 MiB stack budget, subject to actual PS5 direct memory availability. The allocation path reports the failed stage, error, live stack count, and backed and requested bytes. The generated code scan found small vector temporaries and call-graph cycles, so static checks cannot establish the peak stack depth.
