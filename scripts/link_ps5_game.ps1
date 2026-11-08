@@ -93,7 +93,7 @@ try {
         'build/ffmpeg/install/lib/libavcodec.a','build/ffmpeg/install/lib/libswscale.a','build/ffmpeg/install/lib/libavutil.a',
         "$radvSdk/lib/libc++.a","$radvSdk/lib/libc++abi.a","$radvSdk/lib/libunwind.a","$radvSdk/lib/libps5platform.a",'--end-group',
         "-L$sdk/lib",'--as-needed','-lc_stub_weak','-lkernel','-lSceLibcInternal','-lSceVideoOut','-lSceAudioOut',
-        '-lSceUserService','-lScePad','-lSceSysmodule','-lSceNet','-lSceAgc','-lSceAgcDriver',"$out/libc-native.a",'-o',"$out/third-birthday-native.elf")
+        '-lSceUserService','-lSceSystemService','-lScePad','-lSceSysmodule','-lSceNet','-lSceAgc','-lSceAgcDriver',"$out/libc-native.a",'-o',"$out/third-birthday-native.elf")
     [IO.File]::WriteAllLines("$out/LINK.rsp", @($args | ForEach-Object {'"' + $_ + '"'}))
     & "$llvm/ld.lld.exe" "@$out/LINK.rsp" *> "$out/LINK.log"
     if ($LASTEXITCODE) { Get-Content "$out/LINK.log" -Tail 50; throw 'Real native game link failed; inspect exact unresolved providers' }

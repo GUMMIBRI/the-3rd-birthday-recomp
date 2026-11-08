@@ -1499,6 +1499,7 @@ static _Atomic int64_t s_first_flip_argument;
 extern int __real_sceVideoOutSubmitFlip(int32_t handle, int32_t buffer,
                                        uint32_t mode, int64_t argument);
 extern int __real_sceVideoOutGetFlipStatus(int32_t handle, uint64_t *status);
+extern int sceSystemServiceHideSplashScreen(void);
 
 int __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t buffer,
                                  uint32_t mode, int64_t argument) {
@@ -1526,6 +1527,23 @@ int __wrap_sceVideoOutGetFlipStatus(int32_t handle, uint64_t *status) {
 
 static void present_checkpoint(int first, const char *phase, int result) {
     if (first) fprintf(stderr, "first-frame: %s result=%d\n", phase, result);
+}
+
+static void complete_shell_handoff(VkResult present_result) {
+    static int complete;
+    static unsigned attempts;
+    if (complete || attempts >= 3 || atomic_load(&s_first_flip_argument) <= 0)
+        return;
+    if (present_result != VK_SUCCESS && present_result != VK_SUBOPTIMAL_KHR)
+        return;
+
+    /* VideoOut has accepted a frame. Request the shell handoff on the render
+     * thread, retrying only when another swapchain present is accepted. */
+    ++attempts;
+    const int result = sceSystemServiceHideSplashScreen();
+    complete = result == 0;
+    fprintf(stderr, "sdl3vk: splash handoff result=0x%08x attempt=%u\n",
+            (unsigned)result, attempts);
 }
 
 static void present_require(VkResult result, int code, const char *phase) {
@@ -1707,6 +1725,7 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         present_require(wait, 54, "fence wait");
         present_require(vkResetFences(s_dev, 1, &s_fence), 54, "fence reset");
         present_require((VkResult)atomic_load(&s_first_flip_result), 56, "VideoOut flip");
+        complete_shell_handoff(pr);
         first = 0;
 #else
         vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);

@@ -249,3 +249,5 @@ is submitted before recreation so its semaphore is consumed. Synchronous
 queue-present and device-idle calls have no timeout in their API. Stderr
 visibility on the console is unverified. The candidate does not enable
 runtime storage writes.
+
+The splash handoff candidate calls sceSystemServiceHideSplashScreen() on the render thread after Vulkan accepts presentation and VideoOut has accepted a game flip. It retries on up to three eligible frames. The native and converted executable audits passed. Splash dismissal and timing still need an owner launch.
