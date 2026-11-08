@@ -220,3 +220,32 @@ installed directory diagnostic reported hex 29 (decimal 41), meaning
 lstat("/app0") failed. chdir("/app0") retains stage 24. Packaged VFPU tables
 and fonts use explicit /app0 paths. The USB ISO selection, directory
 enumeration provider and write gate remain in use.
+
+Task 121 progressed past the earlier startup exits. The owner heard menu audio
+with the shell splash still displayed. The matched PID 340 log shows a VideoOut
+session opening, but the capture contains no completed flip. PID 337 was a
+separate earlier launch with an abort. The retained logs and installed metadata
+are in build/private-startup-no-cwd-delivery.
+
+The first-frame candidate reports acquire, submit, present and fence results
+on stderr. The wrapped VideoOut calls report the first flip submission and
+report its displayed argument if the status call observes it. The kernel
+renders fatal stage values in hex:
+
+| Hex | Decimal | Boundary |
+| --- | --- | --- |
+| 32 | 50 | Swapchain acquire |
+| 33 | 51 | Command buffer reset, begin or end |
+| 34 | 52 | Queue submit |
+| 35 | 53 | Queue present |
+| 36 | 54 | Fence wait or reset |
+| 37 | 55 | Device idle before recreation |
+| 38 | 56 | VideoOut flip failure |
+
+Native acquire and fence waits have five-second limits. Fatal presentation
+errors terminate without reusing the frame or waiting for unsafe teardown.
+Ordinary shutdown still uses the existing cleanup. A suboptimal acquisition
+is submitted before recreation so its semaphore is consumed. Synchronous
+queue-present and device-idle calls have no timeout in their API. Stderr
+visibility on the console is unverified. The candidate does not enable
+runtime storage writes.

@@ -83,7 +83,7 @@ try {
     $args += '--defsym=readlink=sr_native_readlink'
     foreach ($name in @('opendir','fdopendir','readdir','rewinddir','dirfd','closedir')) { $args += "--defsym=$name=ps5_$name" }
     foreach ($name in @('malloc','calloc','realloc','free','posix_memalign','aligned_alloc','memalign','malloc_usable_size',
-        'reallocf','reallocarray','getline','getdelim','pthread_create','pthread_join','pthread_detach')) { $args += "--wrap=$name" }
+        'reallocf','reallocarray','getline','getdelim','pthread_create','pthread_join','pthread_detach','sceVideoOutSubmitFlip','sceVideoOutGetFlipStatus')) { $args += "--wrap=$name" }
     $args += @($gameObjects | ForEach-Object { $_.Path.Replace('\','/') })
     $args += @(Get-ChildItem "$runtime/*.o" | Where-Object {$_.BaseName -ne 'platform_driver_ps5' -and $_.BaseName -ne 'h264_ffmpeg'} | ForEach-Object {$_.FullName.Replace('\','/')})
     $args += @(Get-ChildItem "$out/*.o" | ForEach-Object {$_.FullName.Replace('\','/')})

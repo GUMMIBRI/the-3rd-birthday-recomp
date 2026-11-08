@@ -1489,26 +1489,101 @@ static void barrier(VkCommandBuffer cmd, VkImage img,
 /* Common present: blit `src` (already TRANSFER_SRC_OPTIMAL; srcw x srch source region)
  * onto the swapchain with aspect-correct letterboxing. upload!=NULL additionally
  * records the staging->s_fbimg copy first (the CPU framebuffer path). */
+#ifdef SR_NATIVE_GAME
+#define PRESENT_TIMEOUT_NS UINT64_C(5000000000)
+static atomic_int s_first_flip_result;
+static atomic_bool s_first_flip_recorded;
+static atomic_bool s_first_display_recorded;
+static _Atomic int64_t s_first_flip_argument;
+
+extern int __real_sceVideoOutSubmitFlip(int32_t handle, int32_t buffer,
+                                       uint32_t mode, int64_t argument);
+extern int __real_sceVideoOutGetFlipStatus(int32_t handle, uint64_t *status);
+
+int __wrap_sceVideoOutSubmitFlip(int32_t handle, int32_t buffer,
+                                 uint32_t mode, int64_t argument) {
+    int result = __real_sceVideoOutSubmitFlip(handle, buffer, mode, argument);
+    if (result != 0) atomic_store(&s_first_flip_result, result);
+    if (!atomic_exchange(&s_first_flip_recorded, true)) {
+        if (result == 0) atomic_store(&s_first_flip_argument, argument);
+        fprintf(stderr, "first-frame: VideoOut submit result=%d argument=%lld\n",
+                result, (long long)argument);
+    }
+    return result;
+}
+
+int __wrap_sceVideoOutGetFlipStatus(int32_t handle, uint64_t *status) {
+    int result = __real_sceVideoOutGetFlipStatus(handle, status);
+    const int64_t argument = atomic_load(&s_first_flip_argument);
+    /* Word 3 is the shown argument in the retained RADV VideoOut ABI. */
+    if (result == 0 && argument > 0 && status[3] == (uint64_t)argument &&
+        !atomic_exchange(&s_first_display_recorded, true)) {
+        fprintf(stderr, "first-frame: VideoOut reports displayed argument=%lld\n",
+                (long long)argument);
+    }
+    return result;
+}
+
+static void present_checkpoint(int first, const char *phase, int result) {
+    if (first) fprintf(stderr, "first-frame: %s result=%d\n", phase, result);
+}
+
+static void present_require(VkResult result, int code, const char *phase) {
+    if (result == VK_SUCCESS) return;
+    fprintf(stderr, "sdl3vk: %s failed: %d (exit %d)\n", phase, (int)result, code);
+    /* An unsuccessful submit or an unresolved fence leaves no safe frame
+     * reuse path. Avoid teardown calls that could wait on that same GPU work. */
+    _Exit(code);
+}
+#else
+#define PRESENT_TIMEOUT_NS UINT64_MAX
+#endif
+
 static int present_common(VkImage src, int srcw, int srch, int do_upload) {
     int quit = 0;
     poll_input(&quit);
     if (quit) return 0;
 
+#ifdef SR_NATIVE_GAME
+    static int first = 1;
+    present_require((VkResult)atomic_load(&s_first_flip_result), 56, "VideoOut flip");
+#endif
     for (int attempt = 0; attempt < 2; attempt++) {
         uint32_t idx = 0;
-        VkResult ar = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, s_sem_acq,
+#ifdef SR_NATIVE_GAME
+        present_checkpoint(first, "acquire begin", 0);
+#endif
+        VkResult ar = vkAcquireNextImageKHR(s_dev, s_swap, PRESENT_TIMEOUT_NS, s_sem_acq,
                                             VK_NULL_HANDLE, &idx);
-        if (ar == VK_ERROR_OUT_OF_DATE_KHR || ar == VK_SUBOPTIMAL_KHR) {
+#ifdef SR_NATIVE_GAME
+        present_checkpoint(first, "acquire end", (int)ar);
+#endif
+        if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
+#ifdef SR_NATIVE_GAME
+            present_checkpoint(first, "recreate idle begin", 0);
+            present_require(vkDeviceWaitIdle(s_dev), 55, "recreate idle");
+#else
             vkDeviceWaitIdle(s_dev);
+#endif
             if (!create_swapchain()) return 1;   /* minimized: drop the frame, stay alive */
             continue;
         }
-        if (ar != VK_SUCCESS) return 1;
+        if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) {
+#ifdef SR_NATIVE_GAME
+            present_require(ar, 50, "acquire");
+#endif
+            return 1;
+        }
 
         VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+#ifdef SR_NATIVE_GAME
+        present_require(vkResetCommandBuffer(s_cmd, 0), 51, "command reset");
+        present_require(vkBeginCommandBuffer(s_cmd, &bi), 51, "command begin");
+#else
         vkResetCommandBuffer(s_cmd, 0);
         vkBeginCommandBuffer(s_cmd, &bi);
+#endif
 
         if (do_upload) {
             /* staging buffer -> fb image */
@@ -1588,7 +1663,11 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+#ifdef SR_NATIVE_GAME
+        present_require(vkEndCommandBuffer(s_cmd), 51, "command end");
+#else
         vkEndCommandBuffer(s_cmd);
+#endif
 
         VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
         VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -1599,7 +1678,14 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         si.pCommandBuffers = &s_cmd;
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = &s_sem_done[idx];
+#ifdef SR_NATIVE_GAME
+        present_checkpoint(first, "submit begin", 0);
+        VkResult submit = vkQueueSubmit(s_queue, 1, &si, s_fence);
+        present_checkpoint(first, "submit end", (int)submit);
+        present_require(submit, 52, "submit");
+#else
         vkQueueSubmit(s_queue, 1, &si, s_fence);
+#endif
 
         VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         pi.waitSemaphoreCount = 1;
@@ -1607,10 +1693,25 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         pi.swapchainCount = 1;
         pi.pSwapchains = &s_swap;
         pi.pImageIndices = &idx;
+#ifdef SR_NATIVE_GAME
+        present_checkpoint(first, "present begin", 0);
+#endif
         VkResult pr = vkQueuePresentKHR(s_queue, &pi);
-
+#ifdef SR_NATIVE_GAME
+        present_checkpoint(first, "present end", (int)pr);
+        if (pr != VK_ERROR_OUT_OF_DATE_KHR && pr != VK_SUBOPTIMAL_KHR)
+            present_require(pr, 53, "present");
+        present_checkpoint(first, "fence begin", 0);
+        VkResult wait = vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, PRESENT_TIMEOUT_NS);
+        present_checkpoint(first, "fence end", (int)wait);
+        present_require(wait, 54, "fence wait");
+        present_require(vkResetFences(s_dev, 1, &s_fence), 54, "fence reset");
+        present_require((VkResult)atomic_load(&s_first_flip_result), 56, "VideoOut flip");
+        first = 0;
+#else
         vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);
         vkResetFences(s_dev, 1, &s_fence);
+#endif
         shot_save();
         /* SR_PACELOG=1: every 5 s, how many frames reached the screen and how evenly */
         {
@@ -1631,8 +1732,12 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
             }
         }
 
-        if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
+        if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR || ar == VK_SUBOPTIMAL_KHR) {
+#ifdef SR_NATIVE_GAME
+            present_require(vkDeviceWaitIdle(s_dev), 55, "recreate idle");
+#else
             vkDeviceWaitIdle(s_dev);
+#endif
             create_swapchain();
         }
         break;
