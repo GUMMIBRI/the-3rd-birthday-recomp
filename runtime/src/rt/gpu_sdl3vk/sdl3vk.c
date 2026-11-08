@@ -196,7 +196,12 @@ static void trim(char *t) {
 }
 static const char *ctl_path(void) {   /* SR_CONTROLS_CFG: test runs keep the player's file */
     const char *e = getenv("SR_CONTROLS_CFG");
-    return e && *e ? e : "controls.cfg";
+    if (e && *e) return e;
+#ifdef SR_NATIVE_GAME
+    return "/app0/controls.cfg";
+#else
+    return "controls.cfg";
+#endif
 }
 static void bind_save(void) {
     if (!sr_storage_require_write()) return;
@@ -958,14 +963,19 @@ static void shot_save(void) {
 /* ---- render scale ------------------------------------------------------------------ */
 
 /* Internal resolution multiplier for the GPU renderer (1 = PSP native 480x272, 4 = 1920x1088).
- * From SR_SCALE, else graphics.cfg in the working directory:
+ * From SR_SCALE, else graphics.cfg in the working directory (loader mount on PS5):
  *   render_scale=0   (0 = match the display: the smallest scale that covers its height)
- * A missing graphics.cfg is written with the default so it can be edited. */
+ * When storage writes are enabled, create a missing file with the default. */
 /* graphics.cfg: "key=integer" lines. */
 #define GCFG_MAX 16
+#ifdef SR_NATIVE_GAME
+#define GRAPHICS_CFG "/app0/graphics.cfg"
+#else
+#define GRAPHICS_CFG "graphics.cfg"
+#endif
 static int gcfg_load(char keys[GCFG_MAX][40], int *vals) {
     int n = 0;
-    FILE *f = fopen("graphics.cfg", "r");
+    FILE *f = fopen(GRAPHICS_CFG, "r");
     if (!f) return 0;
     char line[128];
     while (n < GCFG_MAX && fgets(line, sizeof(line), f)) {
@@ -990,7 +1000,7 @@ void sdl3vk_cfg_set(const char *key, int v) {
     for (i = 0; i < n; i++) if (!strcmp(keys[i], key)) break;
     if (i == n) { if (n == GCFG_MAX) return; SDL_strlcpy(keys[n++], key, 40); }
     vals[i] = v;
-    FILE *f = fopen("graphics.cfg", "w");
+    FILE *f = fopen(GRAPHICS_CFG, "w");
     if (!f) return;
     for (int k = 0; k < n; k++) fprintf(f, "%s=%d\n", keys[k], vals[k]);
     fclose(f);
@@ -1005,12 +1015,12 @@ int sdl3vk_render_scale(void) {
     const char *e = getenv("SR_SCALE");
     if (e && e[0]) want = atoi(e);
     else {
-        FILE *f = fopen("graphics.cfg", "r");
+        FILE *f = fopen(GRAPHICS_CFG, "r");
         if (f) {
             char line[128];
             while (fgets(line, sizeof(line), f)) { int v; if (sscanf(line, "render_scale=%d", &v) == 1) want = v; }
             fclose(f);
-        } else if ((f = fopen("graphics.cfg", "w")) != NULL) {
+        } else if (sr_storage_require_write() && (f = fopen(GRAPHICS_CFG, "w")) != NULL) {
             fprintf(f, "render_scale=0\n");
             fclose(f);
         }

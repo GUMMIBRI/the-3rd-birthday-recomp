@@ -69,19 +69,14 @@ int main(int argc, char **argv) {
     if (base < 0x08000000u || base >= 0x0c000000u || entry < base || entry >= 0x0c000000u || (entry & 3u)) {
         fprintf(stderr, "native game: invalid prepared image address range\n"); return 22;
     }
-    /* The loader mounts the running title at /app0. Keep the physical USB
-     * path separate for user storage and the explicitly selected ISO. */
-#if defined(__PS5__) || defined(SR_PS5_SELECTED_APP)
-    const char *resource_root = "/app0";
-#else
-    const char *resource_root = argv[1];
-#endif
-    if (chdir(resource_root) != 0) {
-        const int cwd_error = errno;
+    /* PS5 resolves packaged resources explicitly through its loader mount. */
+#if !defined(__PS5__) && !defined(SR_PS5_SELECTED_APP)
+    if (chdir(argv[1]) != 0) {
         fprintf(stderr, "native game: cannot select working directory %s: %d\n",
-                resource_root, cwd_error);
+                argv[1], errno);
         return 24;
     }
+#endif
     if (snprintf(memstick, sizeof(memstick), "%s/user/memstick", argv[1]) >= (int)sizeof(memstick) ||
         snprintf(scratch, sizeof(scratch), "%s/user/fs", argv[1]) >= (int)sizeof(scratch) ||
         snprintf(mods, sizeof(mods), "%s/user", argv[1]) >= (int)sizeof(mods)) {

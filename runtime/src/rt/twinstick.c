@@ -72,7 +72,11 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
  *   recenter_delay=0.8  (seconds without right-stick input before it starts while Aya walks)
  *   recenter_delay_still=2.0  (the same when the left stick is idle: Liberation dashes, fights)
  * R3 (right stick click) or O snaps the camera back behind Aya at once. */
+#ifdef SR_NATIVE_GAME
+#define CFG_FILE "/app0/twinstick.cfg"
+#else
 #define CFG_FILE "twinstick.cfg"
+#endif
 #define RECENTER_TC 0.35f   /* time constant of the recentre ease (seconds) */
 #define SNAP_TC     0.08f   /* the same for an R3 / O reset */
 #define SENS_MIN 0.2f

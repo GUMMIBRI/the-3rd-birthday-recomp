@@ -30,7 +30,12 @@ uint8_t *g_patch_flags;   /* game.dll's sr_patch_on (driver.c load_game); NULL w
 
 static const char *cfg_path(void) {   /* SR_CHEATS_CFG: test runs keep the player's file */
     const char *e = getenv("SR_CHEATS_CFG");
-    return e && *e ? e : "cheats.cfg";
+    if (e && *e) return e;
+#ifdef SR_NATIVE_GAME
+    return "/app0/cheats.cfg";
+#else
+    return "cheats.cfg";
+#endif
 }
 static void load(void) {
     s_loaded = 1;
