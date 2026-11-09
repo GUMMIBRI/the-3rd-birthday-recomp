@@ -259,16 +259,67 @@ static void cheats_run(uint32_t fbaddr, int fmt, uint32_t stride) {
     (void)sdl3vk_menu_events();
 }
 
-static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_CAMSTYLE, M_FREEAIM, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
-    int sel = M_RESUME;
+static void graphics_run(uint32_t fbaddr, int fmt, uint32_t stride) {
+    enum { M_RES = 1, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_COUNT };
+    int sel = M_RES;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
     if (boot_cfg < 0) boot_cfg = sdl3vk_render_scale_cfg();
+    (void)sdl3vk_menu_events();
     for (;;) {
         char buf[M_COUNT + 1][96];
         const char *lines[M_COUNT + 1];
         const int cfg_scale = sdl3vk_render_scale_cfg();
+        snprintf(buf[0], 96, "Graphics");
+        const char *restart = cfg_scale != boot_cfg ? "  (restart to apply)" : "";
+        if (cfg_scale <= 0)
+            snprintf(buf[M_RES], 96, "Internal resolution:  Auto  (now %dx)%s", active_scale, restart);
+        else
+            snprintf(buf[M_RES], 96, "Internal resolution:  %dx  (%dx%d)%s", cfg_scale, 480 * cfg_scale, 272 * cfg_scale, restart);
+        snprintf(buf[M_WIDE], 96, "Aspect ratio:  %s", sdl3vk_cfg_get("widescreen", 0) ? "Fill the window (wider view)" : "Original");
+        snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
+        snprintf(buf[M_GLOW], 96, "Glow effect (bloom):  %s", sdl3vk_glow() ? "On (original)" : "Off");
+        snprintf(buf[M_SHOWFPS], 96, "Display and game FPS:  %s", sdl3vk_show_fps() ? "On" : "Off");
+        for (int i = 0; i < M_COUNT; i++) lines[i] = buf[i];
+        lines[M_COUNT] = "Circle: back    Cross / Left / Right: change";
+        sdl3vk_menu_show(lines, M_COUNT + 1, sel);
+        if (present_frame(fbaddr, fmt, stride) == 0) gui_exit(0);
+        const int ev = sdl3vk_menu_events();
+        if (ev & (SDL3VK_MENU_TOGGLE | SDL3VK_MENU_BACK)) break;
+        if (ev & SDL3VK_MENU_UP) sel = sel > M_RES ? sel - 1 : M_COUNT - 1;
+        if (ev & SDL3VK_MENU_DOWN) sel = sel < M_COUNT - 1 ? sel + 1 : M_RES;
+        const int dir = (ev & SDL3VK_MENU_RIGHT) ? 1 : (ev & SDL3VK_MENU_LEFT) ? -1 : (ev & SDL3VK_MENU_OK) ? 1 : 0;
+        if (dir) {
+            switch (sel) {
+            case M_RES: {
+                int v = cfg_scale + dir;
+                if (v < 0) v = 6;
+                if (v > 6) v = 0;
+                sdl3vk_set_render_scale_cfg(v);
+                break;
+            }
+            case M_GLOW: sdl3vk_set_glow(!sdl3vk_glow()); break;
+            case M_SHOWFPS: sdl3vk_set_show_fps(!sdl3vk_show_fps()); break;
+            case M_WIDE: sdl3vk_set_widescreen(!sdl3vk_cfg_get("widescreen", 0)); break;
+            case M_FPS: {
+                const int on = !gegpu_interp_enabled();
+                gegpu_interp_set(on);
+                sdl3vk_cfg_set("frame_interpolation", on);
+                break;
+            }
+            }
+        }
+        SDL_Delay(15);
+    }
+    (void)sdl3vk_menu_events();
+}
+
+static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
+    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_CAMSTYLE, M_FREEAIM, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_GRAPHICS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    int sel = M_RESUME;
+    for (;;) {
+        char buf[M_COUNT + 1][96];
+        const char *lines[M_COUNT + 1];
         snprintf(buf[0],96,"Settings (game paused) - PS5 development");
         snprintf(buf[M_RESUME], 96, "Resume");
         snprintf(buf[M_CONTROLS], 96, "Controls...");
@@ -280,16 +331,8 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         snprintf(buf[M_INVX], 96, "Invert camera left/right:  %s", sr_twinstick_setting(SR_TS_INVERT_X) != 0.0f ? "On" : "Off");
         snprintf(buf[M_INVY], 96, "Invert camera up/down:  %s", sr_twinstick_setting(SR_TS_INVERT_Y) != 0.0f ? "On" : "Off");
         snprintf(buf[M_RECENTER], 96, "Camera returns behind Aya:  %s", sr_twinstick_setting(SR_TS_RECENTER) != 0.0f ? "On" : "Off");
-        const char *restart = cfg_scale != boot_cfg ? "  (restart to apply)" : "";
-        if (cfg_scale <= 0)
-            snprintf(buf[M_RES], 96, "Resolution:  Auto  (now %dx)%s", active_scale, restart);
-        else
-            snprintf(buf[M_RES], 96, "Resolution:  %dx  (%dx%d)%s", cfg_scale, 480 * cfg_scale, 272 * cfg_scale, restart);
-        snprintf(buf[M_WIDE], 96, "Aspect ratio:  %s", sdl3vk_cfg_get("widescreen", 0) ? "Fill the window (wider view)" : "Original");
-        snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
+        snprintf(buf[M_GRAPHICS], 96, "Graphics...");
         snprintf(buf[M_INTRO], 96, "Skip intro at start:  %s", sdl3vk_cfg_get("skip_intro", 0) ? "On" : "Off");
-        snprintf(buf[M_GLOW], 96, "Glow effect (bloom):  %s", sdl3vk_glow() ? "On (original)" : "Off");
-        snprintf(buf[M_SHOWFPS], 96, "Display and game FPS:  %s", sdl3vk_show_fps() ? "On" : "Off");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
         snprintf(buf[M_SHOT], 96, "Save screenshot  (F12)");
         snprintf(buf[M_QUIT], 96, "Quit game");
@@ -320,23 +363,8 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             case M_INVX: sr_twinstick_set(SR_TS_INVERT_X, sr_twinstick_setting(SR_TS_INVERT_X) == 0.0f); break;
             case M_INVY: sr_twinstick_set(SR_TS_INVERT_Y, sr_twinstick_setting(SR_TS_INVERT_Y) == 0.0f); break;
             case M_RECENTER: sr_twinstick_set(SR_TS_RECENTER, sr_twinstick_setting(SR_TS_RECENTER) == 0.0f); break;
-            case M_RES: {
-                int v = cfg_scale + dir;
-                if (v < 0) v = 6;
-                if (v > 6) v = 0;
-                sdl3vk_set_render_scale_cfg(v);
-                break;
-            }
-            case M_GLOW: sdl3vk_set_glow(!sdl3vk_glow()); break;
-            case M_SHOWFPS: sdl3vk_set_show_fps(!sdl3vk_show_fps()); break;
-            case M_WIDE: sdl3vk_set_widescreen(!sdl3vk_cfg_get("widescreen", 0)); break;
+            case M_GRAPHICS: if (ev & SDL3VK_MENU_OK) graphics_run(fbaddr, fmt, stride); break;
             case M_INTRO: sdl3vk_cfg_set("skip_intro", !sdl3vk_cfg_get("skip_intro", 0)); break;
-            case M_FPS: {
-                const int on = !gegpu_interp_enabled();
-                gegpu_interp_set(on);
-                sdl3vk_cfg_set("frame_interpolation", on);
-                break;
-            }
             case M_FULL: sdl3vk_set_fullscreen(!sdl3vk_fullscreen()); break;
             case M_SHOT: if (ev & SDL3VK_MENU_OK) sdl3vk_request_screenshot(); break;
             case M_QUIT: if (ev & SDL3VK_MENU_OK) { gui_exit(0); } break;
