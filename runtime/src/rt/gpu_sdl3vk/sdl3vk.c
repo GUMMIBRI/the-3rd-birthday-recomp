@@ -757,8 +757,8 @@ static int menu_render(int px) {
     return 1;
 }
 
-static void menu_record(VkImage dst) {
-    if (s_menu_n <= 0) return;
+static int menu_record(VkImage dst) {
+    if (s_menu_n <= 0) return 0;
     int dh = (int)s_swap_ext.height, dw = (int)s_swap_ext.width;
     /* Text size from the window height, but small enough that every line fits: the panel is
      * about (1.6 * lines + 3) text heights tall, and a panel taller than the window is not
@@ -767,9 +767,9 @@ static void menu_record(VkImage dst) {
     const int fit = (int)((float)dh * 0.92f / (1.6f * (float)s_menu_n + 3.0f));
     if (px > fit) px = fit;
     if (px < 9) px = 9; if (px > 48) px = 48;
-    if (!menu_render(px)) return;
-    while ((s_menu_w > dw || s_menu_h > dh) && px > 9) { px--; s_menu_dirty = 1; if (!menu_render(px)) return; }
-    if (s_menu_w > dw || s_menu_h > dh) return;
+    if (!menu_render(px)) return 0;
+    while ((s_menu_w > dw || s_menu_h > dh) && px > 9) { px--; s_menu_dirty = 1; if (!menu_render(px)) return 0; }
+    if (s_menu_w > dw || s_menu_h > dh) return 0;
     VkBufferImageCopy c = {0};
     c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     c.imageSubresource.layerCount = 1;
@@ -778,6 +778,7 @@ static void menu_record(VkImage dst) {
     c.imageOffset.y = (dh - s_menu_h) / 2;
     c.imageExtent.width = (uint32_t)s_menu_w; c.imageExtent.height = (uint32_t)s_menu_h; c.imageExtent.depth = 1;
     vkCmdCopyBufferToImage(s_cmd, s_menu_buf, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    return 1;
 }
 
 /* Widescreen (graphics.cfg widescreen=1, Esc menu "Aspect ratio"): how much wider than the
@@ -1704,7 +1705,12 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        menu_record(s_swap_img[idx]);
+        if (menu_record(s_swap_img[idx])) {
+            /* A wide menu can overlap the FPS label or toast. Order the copies. */
+            barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        }
         toast_record(s_swap_img[idx]);
         barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
