@@ -11,9 +11,10 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Push-Location $root
 try {
-    if ($AppRoot -notmatch '^/mnt/usb[0-9]/homebrew/[A-Za-z0-9_-]+$' -or
+    $portable = $AppRoot -ceq '/app0' -and $ConsoleIsoPath -ceq '/app0/ULUS10567.iso'
+    if (!$portable -and ($AppRoot -notmatch '^/mnt/usb[0-9]/homebrew/[A-Za-z0-9_-]+$' -or
         $ConsoleIsoPath -notmatch '^/mnt/usb[0-9]/[^\x00-\x1f\x7f\\:]+$' -or
-        $ConsoleIsoPath.Split('/') -contains '..') { throw 'Invalid selected USB paths' }
+        $ConsoleIsoPath.Split('/') -contains '..')) { throw 'Invalid selected USB or portable /app0 paths' }
     $base = (Resolve-Path -LiteralPath $PlatformRoot).Path.Replace('\','/')
     $prepared = (Resolve-Path -LiteralPath $PreparedDirectory).Path.Replace('\','/')
     $runtime = (Resolve-Path -LiteralPath $RuntimeDirectory).Path.Replace('\','/')

@@ -62,7 +62,12 @@ int main(int argc, char **argv) {
     const uint32_t base = sr_native_game.base, entry = sr_native_game.entry;
     char memstick[SR_DIR_PATH_CAPACITY], scratch[SR_DIR_PATH_CAPACITY], mods[SR_DIR_PATH_CAPACITY];
     CpuState cpu;
-    if (argc != 3 || !usb_path(argv[1], 1) || !usb_path(argv[2], 0)) {
+    int portable = 0;
+#ifdef SR_PS5_SELECTED_APP
+    portable = argc == 3 && !strcmp(SR_PS5_APP_ROOT, "/app0") &&
+               !strcmp(argv[2], "/app0/ULUS10567.iso");
+#endif
+    if (argc != 3 || (!portable && (!usb_path(argv[1], 1) || !usb_path(argv[2], 0)))) {
         fprintf(stderr, "usage: native-game <existing /mnt/usbN/homebrew/app> <owned ISO path on USB>\n");
         return 21;
     }
