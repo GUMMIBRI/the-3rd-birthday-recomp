@@ -253,3 +253,31 @@ runtime storage writes.
 The splash handoff candidate calls sceSystemServiceHideSplashScreen() on the render thread after Vulkan accepts presentation and VideoOut has accepted a game flip. It retries on up to three eligible frames. The native and converted executable audits passed. Splash dismissal and timing still need an owner launch.
 
 Task 137 dismissed the shell splash before PID 356 aborted in the scheduler's host stack allocation path. The next candidate keeps that handoff and uses guarded 4 MiB direct-backed PS5 host stacks. This permits all 128 scheduler slots within the existing 512 MiB stack budget, subject to actual PS5 direct memory availability. The allocation path reports the failed stage, error, live stack count, and backed and requested bytes. The generated code scan found small vector temporaries and call-graph cycles, so static checks cannot establish the peak stack depth.
+
+Future PS5 diagnostic builds use six bounded run slots per title shared across
+build revisions. Tag each record with build, run and PID. Enforce a per-slot
+byte limit and reuse the oldest slot on the seventh run. Validate the rotation
+locally before staging any diagnostic build. After review, preserve matched
+evidence privately off-console and clear only identified, consumed logs during
+an authorized USB session. Protect active and unread logs during cleanup.
+Diagnostics are separate from saves and settings and excluded from release
+packages. This is the policy for future builds. USB task 142 predates it.
+
+## Shipping and playtest handoff
+
+Implement the original game and all features in the agreed shipping scope.
+Use original behavior and this handoff to prioritize missing systems and
+game-breaking defects. Continue independent implementation during hardware
+waits and group local verification around meaningful changes.
+
+The owner confirmed the private portable export based on 848316c works on
+PS5 Pro firmware 11.60. The report leaves the launch location and playthrough
+extent unspecified. Preserve that export and the USB task 142 gameplay
+baseline. The later Vulkan menu fix cf24015 has passed PS5 object compilation.
+
+Request an owner console test only for a meaningful behavior change or a
+game-breaking fix ready for verification. Include the exact build, a short
+test, expected success or failure evidence, and a capture path when needed.
+Prioritize shipping tests within the owner's ceiling of three to five per
+game per night. Coordinate USB access through PS5 Dev and preserve project
+ownership, paused projects, and rollback artifacts.
