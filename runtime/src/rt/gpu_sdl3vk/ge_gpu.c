@@ -1128,11 +1128,26 @@ static void tp_init(void) {
     fprintf(stderr, "texture pack: %d replacement textures in textures/\n", s_tp_n);
 }
 /* The replacement for the texture just decoded into px (w x h), or NULL. Dumps it if asked. */
+static size_t texture_upload_bytes(int w, int h) {
+    if (w <= 0 || h <= 0 || (size_t)w > UP_SIZE / 4u / (size_t)h)
+        return 0;
+    return (size_t)w * (size_t)h * 4u;
+}
+
+static uint32_t *tp_load(const char *path, int *w, int *h) {
+    uint32_t *pixels = sdl3vk_png_load(path, w, h);
+    if (pixels && !texture_upload_bytes(*w, *h)) {
+        free(pixels);
+        return NULL;
+    }
+    return pixels;
+}
+
 static uint32_t *tp_replace(const uint32_t *px, int w, int h, int *rw, int *rh) {
     if (!s_tp_init) tp_init();
     if (s_ppx_n) {                                      /* a PPSSPP pack: its key first */
         const char *pp = ppx_lookup(s_ge);
-        if (pp) { uint32_t *img = sdl3vk_png_load(pp, rw, rh); if (img) return img; }
+        if (pp) { uint32_t *img = tp_load(pp, rw, rh); if (img) return img; }
     }
     if (!s_tp_n && !s_tp_dump) return NULL;
     uint64_t th = 1469598103934665603ull;
@@ -1151,7 +1166,7 @@ static uint32_t *tp_replace(const uint32_t *px, int w, int h, int *rw, int *rh) 
     }
     if (!s_tp_n || !bsearch(&th, s_tp_have, (size_t)s_tp_n, sizeof(uint64_t), u64cmp)) return NULL;
     snprintf(path, sizeof(path), "%s/%016llx.png", s_tp_dir, (unsigned long long)th);
-    return sdl3vk_png_load(path, rw, rh);
+    return tp_load(path, rw, rh);
 }
 
 static void tex_free(TexEnt *e) {
@@ -1181,8 +1196,10 @@ static void tex_evict_lru(void) {
 }
 
 static int tex_upload(VkImage img, const uint32_t *px, int w, int h) {
-    const uint32_t uo = up_alloc((uint32_t)w * (uint32_t)h * 4);
-    memcpy(s_up_map + uo, px, (size_t)w * (size_t)h * 4);
+    const size_t bytes = texture_upload_bytes(w, h);
+    if (!bytes) return 0;
+    const uint32_t uo = up_alloc((uint32_t)bytes);
+    memcpy(s_up_map + uo, px, bytes);
     if (!cmd_begin()) return 0;
     VkImageLayout lay = VK_IMAGE_LAYOUT_UNDEFINED;
     to_layout(s_cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, &lay, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
