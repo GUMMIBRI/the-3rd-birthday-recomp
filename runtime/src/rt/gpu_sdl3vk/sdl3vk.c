@@ -158,7 +158,12 @@ static int   s_mouse_on = 1, s_mouse_btn = 1, s_mouse_inv = 0, s_kbd_smooth = 1;
  * it is rescaled to the full range, so movement starts smoothly from zero. Worn or noisy sticks
  * (drift) need more, precise ones can use less. */
 #define DZ_DEFAULT 0.20f
-static float s_dz_l = DZ_DEFAULT, s_dz_r = DZ_DEFAULT;
+#ifdef SR_NATIVE_GAME
+#define DZ_LEFT_DEFAULT 0.10f
+#else
+#define DZ_LEFT_DEFAULT DZ_DEFAULT
+#endif
+static float s_dz_l = DZ_LEFT_DEFAULT, s_dz_r = DZ_DEFAULT;
 static void stick_deadzone(float *x, float *y, float dz) {
     const float mag = sqrtf(*x * *x + *y * *y);
     if (mag <= dz) { *x = *y = 0.0f; return; }
@@ -289,7 +294,8 @@ void sdl3vk_bind_clear(int a, int slot) {
 void sdl3vk_bind_reset(void) {
     bind_defaults(); s_bump_too = 1;
     s_mouse_on = 1; s_mouse_sens = 1.0f; s_mouse_inv = 0; s_mouse_btn = 1; s_kbd_smooth = 1;
-    s_dz_l = s_dz_r = DZ_DEFAULT;
+    s_dz_l = DZ_LEFT_DEFAULT;
+    s_dz_r = DZ_DEFAULT;
     bind_save();
 }
 /* mouse / keyboard options under the bindings on the Controls page */
