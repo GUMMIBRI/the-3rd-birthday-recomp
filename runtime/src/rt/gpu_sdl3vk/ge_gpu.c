@@ -2494,7 +2494,14 @@ int gegpu_init(void) {
         s_fi_b = (Batch *)malloc(FI_MAX_BATCH * sizeof(Batch));
         s_fi_vs = (PushVS *)malloc(FI_MAX_DRAWS * sizeof(PushVS));
         s_fi_mem = s_fi[0] && s_fi[1] && s_fi_b && s_fi_vs;
-        gegpu_interp_set(e && e[0] ? (e[0] != '0') : sdl3vk_cfg_get("frame_interpolation", 1));
+#ifdef SR_NATIVE_GAME
+        /* Use original cadence until interpolated rendering is qualified on PS5. */
+        const int interpolation_default = 0;
+#else
+        const int interpolation_default = 1;
+#endif
+        gegpu_interp_set(e && e[0] ? (e[0] != '0') :
+                         sdl3vk_cfg_get("frame_interpolation", interpolation_default));
         fprintf(stderr, "gegpu: frame interpolation %s\n", s_fi_on ? "on (60 fps output)" : "off");
     }
 
