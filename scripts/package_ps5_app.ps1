@@ -142,7 +142,7 @@ try {
         # Fresh metadata with the verified field schema; no PE1 identity/art copied.
         $param = [ordered]@{
             ageLevel=@{default=0};applicationCategoryType=0;applicationDrmType='free'
-            attribute=0;attribute2=0;attribute3=524352;conceptId='00025';contentBadgeType=1
+            attribute=0;attribute2=0;attribute3=524288;conceptId='00025';contentBadgeType=1
             contentId='UP9000-PPSA77025_00-THIRDBIRTHDAY000';contentVersion='01.000.001'
             downloadDataSize=256;gameIntent=@{permittedIntents=@(@{intentType='launchActivity'})}
             localizedParameters=@{defaultLanguage='en-US';'en-US'=@{titleName='Parasite Eve 3'}}
