@@ -1,0 +1,1 @@
+FSR 1 shaders and AMD headers were adapted from the PE1 PS5 project's FSR1 implementation. AMD headers retain their MIT license in third_party/LICENSE.txt. The fullscreen and fragment wrappers were adapted for Vulkan descriptor sets 0 and 1 and require a visible-crop sampler and origin-zero output viewport.

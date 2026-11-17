@@ -1,0 +1,40 @@
+diff --git a/runtime/src/rt/platform/gui_sdl.c b/runtime/src/rt/platform/gui_sdl.c
+index de8b703..a2797a8 100644
+--- a/runtime/src/rt/platform/gui_sdl.c
++++ b/runtime/src/rt/platform/gui_sdl.c
+@@ -1,3 +1,4 @@
++#include "storage_gate.h"
+ /* SPDX-License-Identifier: GPL-2.0-or-later
+  * Native SDL/Vulkan frontend adapted from the upstream gui.c SDL path.
+  * No Win32 fallback: initialization must succeed before gameplay can start.
+@@ -263,6 +264,7 @@ static void graphics_run(uint32_t fbaddr, int fmt, uint32_t stride) {
+     enum { M_RES = 1, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_COUNT };
+     int sel = M_RES;
+     const int active_scale = sdl3vk_render_scale();
++    const int can_save_scale = sr_storage_require_write();
+     static int boot_cfg = -1;                      /* render_scale setting the game started with */
+     if (boot_cfg < 0) boot_cfg = sdl3vk_render_scale_cfg();
+     (void)sdl3vk_menu_events();
+@@ -271,7 +273,8 @@ static void graphics_run(uint32_t fbaddr, int fmt, uint32_t stride) {
+         const char *lines[M_COUNT + 1];
+         const int cfg_scale = sdl3vk_render_scale_cfg();
+         snprintf(buf[0], 96, "Graphics");
+-        const char *restart = cfg_scale != boot_cfg ? "  (restart to apply)" : "";
++        const char *restart = !can_save_scale ? "  (set in graphics.cfg)" :
++                              cfg_scale != boot_cfg ? "  (restart to apply)" : "";
+         if (cfg_scale <= 0)
+             snprintf(buf[M_RES], 96, "Internal resolution:  Auto  (now %dx)%s", active_scale, restart);
+         else
+@@ -292,9 +295,10 @@ static void graphics_run(uint32_t fbaddr, int fmt, uint32_t stride) {
+         if (dir) {
+             switch (sel) {
+             case M_RES: {
++                if (!can_save_scale) break;
+                 int v = cfg_scale + dir;
+-                if (v < 0) v = 6;
+-                if (v > 6) v = 0;
++                if (v < 0) v = 8;
++                if (v > 8) v = 0;
+                 sdl3vk_set_render_scale_cfg(v);
+                 break;
+             }
