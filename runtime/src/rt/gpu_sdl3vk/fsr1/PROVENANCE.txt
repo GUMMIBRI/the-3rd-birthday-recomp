@@ -1,0 +1,5 @@
+FSR 1 shaders and AMD headers originate from PE1 Build23:
+C:/.pe/ps5-native/gpu-platform-20261030/attempt-reliability-after-build22-20261109/psyz-src/psyz/src/platform/fsr1
+AMD headers retain their MIT license in third_party/LICENSE.txt. PE1's original
+fullscreen and fragment wrappers were adapted for Vulkan descriptor sets 0
+and 1. They require a visible-crop sampler and origin-zero output viewport.
