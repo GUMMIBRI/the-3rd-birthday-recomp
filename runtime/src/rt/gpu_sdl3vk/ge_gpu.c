@@ -225,6 +225,14 @@ static int s_pipe_n = 0;
 
 static Target   s_tgts[MAX_TGT];
 static DepthEnt s_deps[MAX_DEP];
+typedef struct {
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+    VkImageLayout layout;
+    int seeded;
+} ShadowDepth;
+static ShadowDepth s_shadow_depth[MAX_DEP];
 static Target  *s_cur = NULL;              /* target of the pending batches */
 static uint64_t s_lru = 1;
 
@@ -827,19 +835,21 @@ static DepthEnt *depth_acquire(uint32_t zba, uint32_t zstride) {
     if (!d) {   /* evict slot 0 arbitrarily (depth contents are transient frame data) */
         vkDeviceWaitIdle(s_dev);
         d = &s_deps[0];
-        vkDestroyImageView(s_dev, d->view, NULL);
-        vkDestroyImage(s_dev, d->img, NULL);
-        vkFreeMemory(s_dev, d->mem, NULL);
+        fi_invalidate();
         /* targets holding this depth must drop their framebuffers */
         for (int i = 0; i < MAX_TGT; i++)
             if (s_tgts[i].used && s_tgts[i].dep == d) {
                 vkDestroyFramebuffer(s_dev, s_tgts[i].fb, NULL);
                 s_tgts[i].fb = VK_NULL_HANDLE; s_tgts[i].dep = NULL;
             }
+        vkDestroyImageView(s_dev, d->view, NULL);
+        vkDestroyImage(s_dev, d->img, NULL);
+        vkFreeMemory(s_dev, d->mem, NULL);
+        s_shadow_depth[0].seeded = 0;
         memset(d, 0, sizeof(*d));
     }
     if (!make_image(SW, SH, VK_FORMAT_D16_UNORM,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     &d->img, &d->mem)) return NULL;
     if (!make_view(d->img, VK_FORMAT_D16_UNORM, VK_IMAGE_ASPECT_DEPTH_BIT, &d->view)) return NULL;
     d->layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -941,6 +951,7 @@ static Target *target_acquire(void) {
     DepthEnt *d = depth_acquire(zba, zstride);
     if (!d) return NULL;
     if (t->dep != d || !t->fb) {
+        if (t->dep && t->dep != d) fi_invalidate();
         if (t->fb) vkDestroyFramebuffer(s_dev, t->fb, NULL);
         VkImageView views[2] = { t->view, d->view };
         VkFramebufferCreateInfo fbc = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
@@ -2122,8 +2133,25 @@ static Shadow *shadow_get(int i) {
         s->set_l = make_descriptor(s->view, s_smp_l, s_dpool_fix);
     }
     if (!s->fb || s->fb_dep != t->dep) {
-        if (s->fb) vkDestroyFramebuffer(s_dev, s->fb, NULL);
-        VkImageView views[2] = { s->view, t->dep->view };
+        if (s->fb) {
+            vkDeviceWaitIdle(s_dev);
+            vkDestroyFramebuffer(s_dev, s->fb, NULL);
+            s->fb = VK_NULL_HANDLE;
+            s->fb_dep = NULL;
+        }
+        ShadowDepth *depth = &s_shadow_depth[t->dep - s_deps];
+        if (!depth->image) {
+            if (!make_image(SW, SH, VK_FORMAT_D16_UNORM,
+                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            &depth->image, &depth->memory)) return NULL;
+            if (!make_view(depth->image, VK_FORMAT_D16_UNORM, VK_IMAGE_ASPECT_DEPTH_BIT, &depth->view)) {
+                vkDestroyImage(s_dev, depth->image, NULL);
+                vkFreeMemory(s_dev, depth->memory, NULL);
+                memset(depth, 0, sizeof(*depth));
+                return NULL;
+            }
+        }
+        VkImageView views[2] = { s->view, depth->view };
         VkFramebufferCreateInfo fbc = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
         fbc.renderPass = s_rp; fbc.attachmentCount = 2; fbc.pAttachments = views;
         fbc.width = SW; fbc.height = SH; fbc.layers = 1;
@@ -2140,6 +2168,21 @@ static int fi_seed(int ti) {
     Target *rt = &s_tgts[ti];
     Shadow *sh = shadow_get(ti);
     if (!sh || !rt->used) return 0;
+    ShadowDepth *depth = &s_shadow_depth[rt->dep - s_deps];
+    if (!depth->seeded) {
+        to_layout(s_cmd, rt->dep->img, VK_IMAGE_ASPECT_DEPTH_BIT, &rt->dep->layout,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        to_layout(s_cmd, depth->image, VK_IMAGE_ASPECT_DEPTH_BIT, &depth->layout,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageCopy copy = {0};
+        copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        copy.srcSubresource.layerCount = 1;
+        copy.dstSubresource = copy.srcSubresource;
+        copy.extent.width = SW; copy.extent.height = SH; copy.extent.depth = 1;
+        vkCmdCopyImage(s_cmd, rt->dep->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       depth->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        depth->seeded = 1;
+    }
     to_layout(s_cmd, rt->img, VK_IMAGE_ASPECT_COLOR_BIT, &rt->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkImageCopy ic = {0};
@@ -2231,7 +2274,8 @@ static int fi_replay(Target *disp, float t) {
         }
         Target *rt = &s_tgts[op->tgt];
         to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        to_layout(s_cmd, rt->dep->img, VK_IMAGE_ASPECT_DEPTH_BIT, &rt->dep->layout,
+        ShadowDepth *depth = &s_shadow_depth[rt->dep - s_deps];
+        to_layout(s_cmd, depth->image, VK_IMAGE_ASPECT_DEPTH_BIT, &depth->layout,
                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         VkRenderPassBeginInfo rbi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
         rbi.renderPass = s_rp; rbi.framebuffer = sh->fb;
@@ -2300,6 +2344,7 @@ void *gegpu_interp_frame(uint32_t fbaddr, int fmt, float t) {
     fi_frame_clear(s_fi[s_fi_cur]);
     s_fi_nops = 0; s_fi_nb = 0;
     memset(s_fi_seeded, 0, sizeof(s_fi_seeded));
+    for (int i = 0; i < MAX_DEP; i++) s_shadow_depth[i].seeded = 0;
     s_fi_draw = -1;
     if (s_nverts > MAX_VERTS / 2) {        /* restart the vertex ring between frames, not inside one */
         gpu_idle();
@@ -2322,6 +2367,7 @@ void gegpu_interp_set(int on) {
     if (on && !s_fi_on) {                  /* start recording with a clean slate */
         fi_frame_clear(s_fi[0]); fi_frame_clear(s_fi[1]);
         memset(s_fi_seeded, 0, sizeof(s_fi_seeded));
+    for (int i = 0; i < MAX_DEP; i++) s_shadow_depth[i].seeded = 0;
         s_fi_nops = 0; s_fi_nb = 0; s_fi_prev_ok = 0;
     }
     s_fi_on = on;
