@@ -46,6 +46,9 @@
 #include <string.h>
 #include <time.h>
 #include "platform/clock.h"
+#ifndef SR_TS_ANALOG_MOVE
+#define SR_TS_ANALOG_MOVE (SR_TS_FREE_AIM + 1)
+#endif
 
 float g_script_rx = 0.0f, g_script_ry = 0.0f;   /* SR_PADSCRIPT right-stick override */
 
@@ -58,7 +61,7 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
  * fine control and only a full push turns at the full rate. */
 #define YAW_RATE   2.1f
 #define PITCH_RATE 1.2f
-#define SMOOTH_S   0.06f    /* time constant of the turn-speed smoothing (seconds) */
+#define SMOOTH_S   0.03f    /* time constant of the turn-speed smoothing (seconds); 0.06 felt late (issue #20) */
 /* Limits on the final elevation of the eye above the target (radians). */
 #define ELEV_MIN (-0.35f)   /* a little below the target */
 #define ELEV_MAX (1.2f)     /* high overhead */
@@ -94,7 +97,7 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
 #define MODERN_AIM_GAIN 9.0f  /* mouse radians per pad sample -> aim stick deflection (x4 when steady) */
 
 static int s_on = -1;
-static int s_style = 0;                              /* 0 classic orbit, 1 modern */
+static int s_style = 0;                              /* 0 classic orbit, 1 modern (over the shoulder), 2 centred */
 static int s_abs_valid = 0;                          /* modern: direction taken from the game yet */
 static float s_abs_yaw = 0.0f, s_abs_elev = 0.0f;    /* modern: where the camera looks from */
 static float s_speed = 1.0f;
@@ -152,7 +155,7 @@ static void init_once(void) {
             else if (sscanf(line, "recenter_delay_still=%f", &v) == 1) s_recenter_delay_still = v;
             else if (sscanf(line, "recenter_delay=%f", &v) == 1) s_recenter_delay = v;
             else if (sscanf(line, "recenter=%f", &v) == 1) s_recenter = v != 0.0f;
-            else if (sscanf(line, "style=%f", &v) == 1) s_style = v != 0.0f;
+            else if (sscanf(line, "style=%f", &v) == 1) s_style = v >= 2.0f ? 2 : v != 0.0f;
             else if (sscanf(line, "free_aim=%f", &v) == 1) s_free_aim = v != 0.0f;
             else if (sscanf(line, "analog_move=%f", &v) == 1) s_analog_move = v != 0.0f;
         }
@@ -161,7 +164,7 @@ static void init_once(void) {
     } else {
         cfg_save();                                  /* write the defaults so they can be edited */
     }
-    { const char *st = getenv("SR_CAMSTYLE"); if (st) s_style = atoi(st) != 0; }   /* tests */
+    { const char *st = getenv("SR_CAMSTYLE"); if (st) { s_style = atoi(st); if (s_style < 0 || s_style > 2) s_style = 1; } }   /* tests */
     { const char *fa = getenv("SR_FREEAIM"); if (fa) s_free_aim = atoi(fa) != 0; }
     { const char *am = getenv("SR_ANALOGMOVE"); if (am) s_analog_move = atoi(am) != 0; }
     const char *sp = getenv("SR_TWINSTICK_SPEED");
@@ -193,7 +196,7 @@ void sr_twinstick_set(int id, float v) {
     case SR_TS_INVERT_X:    s_inv_x = v != 0.0f; break;
     case SR_TS_INVERT_Y:    s_inv_y = v != 0.0f; break;
     case SR_TS_RECENTER:    s_recenter = v != 0.0f; break;
-    case SR_TS_STYLE:       s_style = v != 0.0f; s_abs_valid = 0; s_yaw_off = s_pitch_off = 0.0f; break;
+    case SR_TS_STYLE:       s_style = v >= 2.0f ? 2 : v != 0.0f; s_abs_valid = 0; s_yaw_off = s_pitch_off = 0.0f; break;
     case SR_TS_FREE_AIM:    s_free_aim = v != 0.0f; break;
     case SR_TS_ANALOG_MOVE: s_analog_move = v != 0.0f; break;
     default: return;
@@ -396,6 +399,12 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     init_once();
     if (on < 0) { const char *e = getenv("SR_TWINSTICK_AIMTURN"); on = s_on && !(e && e[0] == '0'); }
     s_moving = abs((int)*lx - 128) >= 40 || abs((int)*ly - 128) >= 40;   /* recentre input */
+    {   /* SR_FACELOG=1: the stick and Aya's facing, twice a second (movement checks) */
+        static int fl = -1; if (fl < 0) fl = getenv("SR_FACELOG") ? 1 : 0;
+        if (fl && s_aya && (s_ticks % 30) == 0)
+            fprintf(stderr, "face: stick %d,%d (angle %.2f) facing %.3f\n", *lx - 128, *ly - 128,
+                    atan2f((float)(*lx - 128), (float)(128 - *ly)), rdf(s_aya + 0x4c4));
+    }
     if (!on) return;
     const int l = (*btn & 0x0100u) != 0;
     const int stick_idle = abs((int)*lx - 128) < 40 && abs((int)*ly - 128) < 40;
@@ -450,7 +459,15 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     }
     /* What the game sees: L (aim, including the egg launcher) or Triangle (Overdive view)
      * switch to the game's own special cameras, which the orbit must leave alone. */
-    s_btn_special = (*btn & (0x0100u | 0x1000u)) != 0;
+    /* Triangle counts once it has been held alone for a moment: Triangle + Circle with the
+     * Overdive bar not full is a quick stun move (it cancels a dodge's recovery) with no special
+     * camera, and treating it as one reset the orbit with a jump (issue #23). The Overdive
+     * view itself also shows up by its field of view (update_special). */
+    {
+        static int tri_n = 0;
+        tri_n = (*btn & 0x1000u) && !(*btn & 0x2000u) ? tri_n + 1 : 0;
+        s_btn_special = (*btn & 0x0100u) != 0 || tri_n >= 8;
+    }
     s_aiming = (*btn & 0x0100u) != 0;
 }
 
@@ -459,6 +476,47 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
 /* Modern style: the view camera's target we shifted, in case the game doesn't rewrite it every
  * frame like the eye (then the shift is taken off before it is applied again). */
 static uint32_t s_tgt_obj; static float s_tgt_written[3], s_tgt_orig[3];
+/* Modern / centred: when a special camera (aim, Overdive) ends, the view eases from where that
+ * camera looked to the follow view over BLEND_S instead of jumping (issue #12). */
+#define BLEND_S 0.35
+static int s_blend_on = 0; static double s_blend_t0;
+static float s_bl_eye[3], s_bl_tgt[3], s_sp_eye[3], s_sp_tgt[3];
+static int s_sp_ok = 0;
+static float s_view_eye[3], s_view_tgt[3];           /* the last follow view we showed */
+static int s_view_ok = 0;
+
+/* Walls (issue #11 "seeing through walls"). The game keeps its follow camera out of walls by
+ * sweeping the line from Aya to the camera (cam_collide, called from the follow camera at
+ * 0x08AC1544 with a1 = start point, a2 = offset to the eye) and shortening the distance where it
+ * hits. Our modern / centred camera looks along another line (its own direction, over the
+ * shoulder), so the game's sweep missed the walls ours ran into. The sweep is given our line
+ * instead; how far the game then lets its eye go (s_col_*) shortens our camera the same way. */
+#define COLLIDE_RA 0x08AC1548u
+static float s_col_start[3], s_col_len = 0.0f, s_col_nominal = 0.0f;
+static unsigned s_col_tick = 0;
+
+static void cam_collide(CpuState *s) {
+    if (!s_style || !s_abs_valid || s_suspended || s->r[31] != COLLIDE_RA) return;
+    const uint32_t pa = s->r[5], va = s->r[6];
+    if (pa < 0x08800000u || pa >= 0x0A000000u - 16u || va < 0x08800000u || va >= 0x0A000000u - 16u) return;
+    float p[3] = { rdf(pa), rdf(pa + 4), rdf(pa + 8) };
+    const float v[3] = { rdf(va), rdf(va + 4), rdf(va + 8) };
+    const float len = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!(len > 1.0f && len < 100000.0f)) return;
+    const float yaw = s_abs_yaw, elev = s_abs_elev;
+    float want = len;
+    if (s_style == 1) {                              /* the same framing as rotate_camera */
+        const float side = MODERN_SIDE * len;
+        want = len * MODERN_DOLLY;
+        p[0] += cosf(yaw) * side; p[2] += -sinf(yaw) * side; p[1] += MODERN_RAISE * want;
+    }
+    const float ch = cosf(elev) * want;
+    wrf(pa, p[0]); wrf(pa + 4, p[1]); wrf(pa + 8, p[2]);
+    wrf(va, sinf(yaw) * ch); wrf(va + 4, sinf(elev) * want); wrf(va + 8, cosf(yaw) * ch);
+    memcpy(s_col_start, p, sizeof(p));
+    s_col_len = want; s_col_nominal = len;
+    s_col_tick = s_ticks;
+}
 
 static void rotate_camera(uint32_t base, const char *why) {
     const int view = why[0] == 'v';                  /* the view camera's source (else the logic camera) */
@@ -506,22 +564,45 @@ static void rotate_camera(uint32_t base, const char *why) {
     }
     if (elev < ELEV_MIN) elev = ELEV_MIN;
     if (elev > ELEV_MAX) elev = ELEV_MAX;
+    /* how far the game let its eye go along our line (cam_collide): a wall shortens ours too */
+    float wall = 1.0f;
+    if (s_style && view && s_col_len > 1.0f && s_ticks - s_col_tick <= 4) {
+        const float dx = e[0] - s_col_start[0], dy = e[1] - s_col_start[1], dz = e[2] - s_col_start[2];
+        wall = sqrtf(dx * dx + dy * dy + dz * dz) / s_col_len;
+        if (wall > 1.0f) wall = 1.0f;
+        if (wall < 0.05f) wall = 0.05f;
+        dist = s_col_nominal;                        /* the game's eye is on our line now: its own distance */
+        { static int n = 0; static float last = 1.0f; if (getenv("SR_WALLLOG") && fabsf(wall - last) > 0.05f && n++ < 200) { last = wall; fprintf(stderr, "WALL %.2f\n", wall); } }
+    }
     float tw[3] = { t[0], t[1], t[2] };              /* the target written back */
-    if (s_style && view) {                           /* over the shoulder: closer, to the side */
-        const float side = MODERN_SIDE * dist;
+    if (s_style && view) memcpy(s_tgt_orig, t, sizeof(t));
+    if (s_style == 1 && view) {                      /* over the shoulder: closer, to the side */
+        const float side = MODERN_SIDE * dist * wall;   /* pulled in by a wall: back towards the middle */
         dist *= MODERN_DOLLY;
         const float rx = cosf(yaw), rz = -sinf(yaw);   /* horizontal, perpendicular to the view */
         tw[0] += rx * side; tw[2] += rz * side; tw[1] += MODERN_RAISE * dist;
-        memcpy(s_tgt_orig, t, sizeof(t));
     }
+    dist *= wall;
     const float ch = cosf(elev) * dist;
     e[0] = tw[0] + sinf(yaw) * ch;
     e[1] = tw[1] + sinf(elev) * dist;
     e[2] = tw[2] + cosf(yaw) * ch;
+    if (s_style && view && s_blend_on) {             /* back from aiming / Overdive: ease, don't snap */
+        float k = (float)((now_s() - s_blend_t0) / BLEND_S);
+        if (k >= 1.0f || k < 0.0f) s_blend_on = 0;
+        else {
+            k = k * k * (3.0f - 2.0f * k);
+            for (int i = 0; i < 3; i++) {
+                e[i] = s_bl_eye[i] + (e[i] - s_bl_eye[i]) * k;
+                tw[i] = s_bl_tgt[i] + (tw[i] - s_bl_tgt[i]) * k;
+            }
+        }
+    }
     wrf(eye, e[0]); wrf(eye + 4, e[1]); wrf(eye + 8, e[2]);
     if (s_style && view) {
         wrf(tgt, tw[0]); wrf(tgt + 4, tw[1]); wrf(tgt + 8, tw[2]);
         s_tgt_obj = base; memcpy(s_tgt_written, tw, sizeof(tw));
+        memcpy(s_view_eye, e, sizeof(e)); memcpy(s_view_tgt, tw, sizeof(tw)); s_view_ok = 1;
     }
     memcpy(s_last[slot].eye, e, sizeof(e));
 }
@@ -562,7 +643,8 @@ static void check_cut(uint32_t src) {
             reset_offset("new camera source");
         }
         else if (dt > fmaxf(0.3f * dist, 60.0f)) reset_offset("target jump");
-        else if (de > fmaxf(0.5f * dist, 100.0f)) reset_offset("eye jump");
+        /* with cam_collide the game's eye follows our turns, so only its target tells a cut */
+        else if (de > fmaxf(0.5f * dist, 100.0f) && s_ticks - s_col_tick > 4) reset_offset("eye jump");
     }
     s_cut_src = src;
     memcpy(s_cut_tgt, t, sizeof(t));
@@ -607,6 +689,11 @@ static void update_special(uint32_t src) {
     const int by_fov = fov_ok && std > 0.0f && fabsf(fov - std) > 0.02f * std;
     const int special = s_btn_special || by_fov;
     if (special != s_suspended) {
+        if (!special && s_style && s_sp_ok) {        /* the ease starts at the special camera's view */
+            memcpy(s_bl_eye, s_sp_eye, sizeof(s_bl_eye)); memcpy(s_bl_tgt, s_sp_tgt, sizeof(s_bl_tgt));
+            s_blend_on = 1; s_blend_t0 = now_s();
+        }
+        s_sp_ok = 0;
         static int n = 0;
         if (n++ < 400)
             fprintf(stderr, "twinstick: %s camera (fov %.3f, follow fov %.3f, %s)\n",
@@ -681,11 +768,46 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
                 const uint32_t src = s->r[5];       /* where the picture looks: the free aim's start */
                 const float dx = rdf(src + 0x20) - rdf(src + 0x10), dz = rdf(src + 0x28) - rdf(src + 0x18);
                 if (dx * dx + dz * dz > 1.0f) { s_view_look = atan2f(dx, dz); s_view_look_ok = 1; }
-            } else aim_check(s->r[5]);
+            } else {
+                const uint32_t src = s->r[5];       /* the special camera's view, for the ease back */
+                for (int i = 0; i < 3; i++) { s_sp_eye[i] = rdf(src + 0x10 + 4 * i); s_sp_tgt[i] = rdf(src + 0x20 + 4 * i); }
+                s_sp_ok = 1;
+                /* Free aim, before the game first builds Aya's aim pose: it aims (and its aim
+                 * camera looks) along the direction it latched from her old facing when it saw
+                 * L, for about three frames, then the free aim takes over and the camera jumped
+                 * (issue #15: a jolt when aiming starts). Latch our direction from the start. */
+                if (s_free_aim && s_aiming && s_aim_pending && !s_aim_stick && s_aya &&
+                    MEM_R32(s_aya + 0x434u) == 0xFFFFFFFFu) {
+                    const float y = s_aim_look - AIM_CAM_OFF;
+                    static int n = 0;
+                    if (getenv("SR_AIMLOG") && n++ < 30)
+                        fprintf(stderr, "twinstick: early aim latch %.2f (was %.2f) eye-target yaw %.2f\n", y,
+                                atan2f(rdf(s_aya + 0x13a0), rdf(s_aya + 0x13a8)),
+                                atan2f(rdf(src + 0x20) - rdf(src + 0x10), rdf(src + 0x28) - rdf(src + 0x18)));
+                    for (uint32_t o = 0x13a0; o <= 0x13b0; o += 0x10) { wrf(s_aya + o, sinf(y)); wrf(s_aya + o + 4, 0.0f); wrf(s_aya + o + 8, cosf(y)); }
+                    wrf(s_aya + 0x4c4, y);         /* her facing, and her root matrix it is read back from */
+                    wrf(s_aya + 0x20, cosf(y)); wrf(s_aya + 0x24, 0.0f); wrf(s_aya + 0x28, -sinf(y));
+                    wrf(s_aya + 0x40, sinf(y)); wrf(s_aya + 0x44, 0.0f); wrf(s_aya + 0x48, cosf(y));
+                    /* the aim camera holds a view along the game's own (unturned) follow camera
+                     * until the aim pose starts: show ours until then */
+                    if (s_style && s_view_ok)
+                        for (int i = 0; i < 3; i++) { wrf(src + 0x10 + 4 * i, s_view_eye[i]); wrf(src + 0x20 + 4 * i, s_view_tgt[i]); }
+                }
+                aim_check(src);
+            }
         }
+        break;
+    case HOOK_CAM_COLLIDE:     /* a1 = start, a2 = offset to the eye (follow camera's wall sweep) */
+        cam_collide(s);
         break;
     case HOOK_PLAYER_POSE:     /* a0 = Aya's object */
         s_aya = s->r[4];
+        {   /* SR_FACEWATCH=1: report the code that writes her facing (debugging movement) */
+            static int fw = -1; if (fw < 0) fw = getenv("SR_FACEWATCH") ? 1 : 0;
+            if (fw == 1 && s_aya) { extern void sr_watch_set(uint32_t); sr_watch_set(s_aya + 0x4c6); fw = 2; }
+            static int rw = -1; if (rw < 0) rw = getenv("SR_READWATCH") ? 1 : 0;   /* readers of her stick copy */
+            if (rw == 1 && s_aya) { extern void sr_readwatch_set(uint32_t, uint32_t); extern int g_sr_dbg; sr_readwatch_set(s_aya + 0xe88, 0x10); g_sr_dbg = 1; rw = 2; }
+        }
         break;
     case HOOK_MAT_FROM_YAW:    /* a0 = object, $f13 = its facing */
         if (s->r[4] != s_aya || !s_aya) break;

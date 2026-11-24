@@ -80,6 +80,8 @@ cam_setup      = 0x08B435B8
 # reads that matrix back each frame: it tells which object is Aya.
 mat_from_yaw   = 0x088338F8
 player_pose    = 0x08975CC8
+# Follow-camera wall sweep hook, upstream v0.9.17.
+cam_collide    = 0x08B133D8
 
 [patches]
 # Instruction patches the Esc menu's Cheats page switches on and off (codegen emits both the
