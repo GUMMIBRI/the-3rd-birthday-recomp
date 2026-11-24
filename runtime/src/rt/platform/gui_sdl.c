@@ -315,7 +315,7 @@ static void graphics_run(uint32_t fbaddr, int fmt, uint32_t stride) {
 }
 
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_CAMSTYLE, M_FREEAIM, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_GRAPHICS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_CAMSTYLE, M_FREEAIM, M_ANALOG, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_GRAPHICS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     for (;;) {
         char buf[M_COUNT + 1][96];
@@ -327,6 +327,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         snprintf(buf[M_CAMSTYLE], 96, "Camera style:  %s", sr_twinstick_setting(SR_TS_STYLE) != 0.0f
                  ? "Modern (over the shoulder, free look)" : "Classic (orbit, returns behind Aya)");
         snprintf(buf[M_FREEAIM], 96, "Free aim (mouse / right stick while aiming):  %s", sr_twinstick_setting(SR_TS_FREE_AIM) != 0.0f ? "On" : "Off");
+        snprintf(buf[M_ANALOG], 96, "Left stick:  %s", sr_twinstick_setting(SR_TS_ANALOG_MOVE) != 0.0f ? "Full analog" : "Original");
         snprintf(buf[M_SPEED], 96, "Camera speed:  %.2f", sr_twinstick_setting(SR_TS_SENSITIVITY));
         snprintf(buf[M_INVX], 96, "Invert camera left/right:  %s", sr_twinstick_setting(SR_TS_INVERT_X) != 0.0f ? "On" : "Off");
         snprintf(buf[M_INVY], 96, "Invert camera up/down:  %s", sr_twinstick_setting(SR_TS_INVERT_Y) != 0.0f ? "On" : "Off");
@@ -357,6 +358,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             case M_CHEATS: if (ev & SDL3VK_MENU_OK) cheats_run(fbaddr, fmt, stride); break;
             case M_CAMSTYLE: sr_twinstick_set(SR_TS_STYLE, sr_twinstick_setting(SR_TS_STYLE) == 0.0f); break;
             case M_FREEAIM: sr_twinstick_set(SR_TS_FREE_AIM, sr_twinstick_setting(SR_TS_FREE_AIM) == 0.0f); break;
+            case M_ANALOG: sr_twinstick_set(SR_TS_ANALOG_MOVE, sr_twinstick_setting(SR_TS_ANALOG_MOVE) == 0.0f); break;
             case M_SPEED:
                 sr_twinstick_set(SR_TS_SENSITIVITY, sr_twinstick_setting(SR_TS_SENSITIVITY) * (dir > 0 ? 1.15f : 1.0f / 1.15f));
                 break;
