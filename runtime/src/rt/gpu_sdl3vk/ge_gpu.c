@@ -2043,6 +2043,64 @@ static int fi_find(const FiFrame *f, const FiDraw *x) {
     }
 }
 
+static uint32_t fi_count(const FiFrame *f, const uint32_t *key) {
+    for (uint32_t i = fi_hash(key, 5) & (FI_HASH - 1);; i = (i + 1) & (FI_HASH - 1)) {
+        const FiOcc *o = &f->o[i];
+        if (!o->n) return 0;
+        if (!memcmp(o->k, key, sizeof(o->k))) return o->n;
+    }
+}
+static int fi_origin(const float *m, float *o) {       /* where a draw's own origin lands (NDC) */
+    if (fabsf(m[15]) < 1e-6f) return 0;
+    o[0] = m[12] / m[15]; o[1] = m[13] / m[15];
+    return 1;
+}
+/* The previous frame's draw for x. Draws with the same key are told apart by their order in the
+ * frame, but when one of them comes or goes (a blinking "NEW" tag in a menu, issue #11) the
+ * order shifts and each gets paired with its neighbour, so the in-between frame drew it halfway
+ * to the other's place (scrolling the pause menu moved its rows by two). Take the nearest one
+ * on screen instead (up to FI_NEAREST_MAX same-key draws), each
+ * previous draw at most once; a draw with no free partner is not interpolated. */
+#define FI_NEAREST_MAX 256   /* the pause menu draws 46 rows of text with one key */
+static uint8_t s_fi_used[FI_MAX_DRAWS];
+/* When the two frames have a different number of draws with this key (a letter of the Game
+ * Over title blinking, issue #11), some draw has no true partner, and the nearest free one can
+ * be the next letter over: then only a partner in practically the same place counts (the draw
+ * is otherwise not moved). FI_SAME_POS is in NDC (2 = screen height): under a pixel at 1x; 0.02
+ * still let the Game Over letters' little corner marks swap places. */
+#define FI_SAME_POS 0.005f
+static int fi_match(const FiFrame *f, const FiFrame *cur, const FiDraw *x) {
+    const uint32_t n = fi_count(f, x->key);
+    const int strict = n != fi_count(cur, x->key);
+    float ox[2];
+    const int have_o = fi_origin(x->m, ox);
+    if (n == 0) return -1;
+    if ((n == 1 && !strict) || n > FI_NEAREST_MAX || !have_o) {
+        const int j = fi_find(f, x);
+        if (j < 0 || s_fi_used[j]) return -1;
+        if (strict && have_o) {
+            float oj[2];
+            if (!fi_origin(f->d[j].m, oj) || fabsf(oj[0] - ox[0]) + fabsf(oj[1] - ox[1]) > FI_SAME_POS) return -1;
+        }
+        s_fi_used[j] = 1;
+        return j;
+    }
+    FiDraw q = *x;
+    int best = -1; float bd = 1e30f;
+    for (uint32_t k = 0; k < n; k++) {
+        q.occ = k;
+        const int j = fi_find(f, &q);
+        if (j < 0 || s_fi_used[j]) continue;
+        float oj[2];
+        if (!fi_origin(f->d[j].m, oj)) continue;
+        const float d = (oj[0] - ox[0]) * (oj[0] - ox[0]) + (oj[1] - ox[1]) * (oj[1] - ox[1]);
+        if (d < bd) { bd = d; best = j; }
+    }
+    if (best >= 0 && strict && bd > FI_SAME_POS * FI_SAME_POS) best = -1;
+    if (best >= 0) s_fi_used[best] = 1;
+    return best;
+}
+
 static void fi_frame_clear(FiFrame *f) {
     f->nd = 0;
     for (int i = 0; i < FI_HASH; i++) { f->h[i].idx = -1; f->o[i].n = 0; }
@@ -2210,11 +2268,12 @@ static int fi_replay(Target *disp, float t) {
         if (!inv44(pvc, inv)) return -1;
         mul44(mid, inv, cam);
     }
+    memset(s_fi_used, 0, sizeof(s_fi_used));
     for (int i = 0; i < cur->nd; i++) {
         const FiDraw *x = &cur->d[i];
         PushVS *v = &s_fi_vs[i];
         memset(v, 0, sizeof(*v));
-        const int j = fi_find(prev, x);
+        const int j = fi_match(prev, cur, x);
         float R[16];
         int have = 0;
         {   /* SR_FIDBG=1: why draws do (not) match the previous frame */
